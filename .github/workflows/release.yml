@@ -1,0 +1,38 @@
+name: release
+
+# Builds the Windows .exe and publishes it to a GitHub Release whenever you
+# push a version tag, e.g.  git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release (x86_64-pc-windows-msvc)
+        run: cargo build --release --locked
+
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/ai-usagebar-win.exe dist/
+          Copy-Item README.md dist/
+          Copy-Item config.example.toml dist/
+          Compress-Archive -Path dist/* `
+            -DestinationPath "ai-usagebar-win-${{ github.ref_name }}-x86_64-windows.zip"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            target/release/ai-usagebar-win.exe
+            ai-usagebar-win-${{ github.ref_name }}-x86_64-windows.zip
