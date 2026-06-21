@@ -2,6 +2,10 @@
 name = "ai-usagebar-win"
 version = "0.1.0"
 edition = "2024"
+description = "Native Windows system-tray app showing AI plan usage across Anthropic, OpenAI, Z.AI, OpenRouter, and DeepSeek"
+repository = "https://github.com/FranzoiDev/ai-usagebar-win"
+license = "MIT"
+readme = "README.md"
 
 [dependencies]
 anyhow = "1.0.102"
