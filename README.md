@@ -1,164 +1,112 @@
 # ai-usagebar-win
 
-I kept losing track of how much of my AI plans I'd burned through —
-Claude, Codex, the GLM coding plan, OpenRouter credits — so I built a tiny
-**native Windows** app that just sits in the system tray (next to the clock,
-Wi-Fi and volume) and shows me, at a glance, how much I've used.
+Windows system-tray app that shows AI plan usage for Anthropic (Claude),
+OpenAI (Codex), Z.AI (GLM), OpenRouter, and DeepSeek.
 
-No Electron, no .NET, no background browser. It's a single `~3 MB` `.exe`
-written in Rust on top of [`tray-icon`](https://crates.io/crates/tray-icon) +
-[`tao`](https://crates.io/crates/tao), talking straight to the Win32
-`Shell_NotifyIcon` API. The data side is a reverse-engineering of the Linux
-[`ai-usagebar`](https://github.com/akitaonrails/ai-usagebar) Waybar widget,
-rewritten for Windows.
+Single `.exe`, no installer, no runtime. Written in Rust with
+[`tray-icon`](https://crates.io/crates/tray-icon) and
+[`tao`](https://crates.io/crates/tao) over the Win32 `Shell_NotifyIcon` API.
+The data layer is a Windows port of the Linux
+[`ai-usagebar`](https://github.com/akitaonrails/ai-usagebar) Waybar widget.
 
-Supported providers: **Anthropic (Claude)**, **OpenAI (Codex)**,
-**Z.AI (GLM)**, **OpenRouter**, and **DeepSeek**.
+The app is read-only. It reads the access tokens the `claude` / `codex` CLIs
+already wrote to disk and never refreshes or rewrites them, so it cannot log
+you out. An expired token shows a "re-login" hint instead of being refreshed.
 
-## What it looks like
+## Screenshots
 
-Hover the tray icon for a quick summary:
+Hover (tooltip):
 
-<!-- Drop your screenshot at screenshots/hover.png (mouse hovering the tray icon) -->
-![Tray tooltip on hover](screenshots/hover.png)
+<!-- screenshots/hover.png -->
+![hover](screenshots/hover.png)
 
-Right-click it for the full breakdown per provider:
+Right-click (menu):
 
-<!-- Drop your screenshot at screenshots/menu.png (right-click context menu open) -->
-![Right-click context menu](screenshots/menu.png)
+<!-- screenshots/menu.png -->
+![menu](screenshots/menu.png)
 
-The icon itself changes color with your worst-case usage —
-🟢 under 50%, 🟡 50%+, 🟠 75%+, 🔴 90%+ — so you can tell you're running low
-without even hovering.
+The icon color tracks worst-case usage: green <50%, yellow >=50%, orange >=75%,
+red >=90%.
 
-## It won't log you out
+## Install
 
-This is the part I cared about most: **the app never refreshes your tokens and
-never writes to your credential files.** Your `claude` / `codex` CLIs own those
-tokens. If this app refreshed them it could rotate the refresh-token out from
-under the CLI and silently log you out of your tools — so it simply doesn't.
+Download `ai-usagebar-win.exe` from
+[Releases](https://github.com/FranzoiDev/ai-usagebar-win/releases) and run it.
 
-- It only **reads** the access token that's already on disk.
-- If a token has already **expired**, the tray just says *"run `claude`"* /
-  *"run `codex login`"* instead of trying to refresh it.
-- The API-key providers (Z.AI, OpenRouter, DeepSeek) don't have this problem —
-  keys don't expire.
+The binary is unsigned, so SmartScreen may warn on first run: "More info" ->
+"Run anyway". To start it with Windows, put a shortcut to the `.exe` in
+`shell:startup` (`Win+R` -> `shell:startup`).
 
-## Download (no Rust needed)
+## Providers
 
-Grab the latest `.exe` from the
-[**Releases**](https://github.com/FranzoiDev/ai-usagebar-win/releases) page and
-run it. That's it — no installer, no dependencies.
-
-> **First launch:** because the `.exe` isn't code-signed, Windows SmartScreen
-> may show *"Windows protected your PC"*. Click **More info → Run anyway**. You
-> only have to do this once.
-
-Want it to start with Windows? Press `Win + R`, type `shell:startup`, and drop
-a shortcut to the `.exe` in that folder.
-
-## Set up your providers
-
-The app reads whatever's already there. Set up only the ones you use:
-
-| Provider | How it reads usage | What you do once |
+| Provider | Source | Setup |
 |---|---|---|
-| Anthropic (Claude) | OAuth from `%USERPROFILE%\.claude\.credentials.json` | Run `claude` and log in |
-| OpenAI (Codex) | OAuth from `%USERPROFILE%\.codex\auth.json` | Run `codex login` |
-| Z.AI (GLM) | API key | Set `ZAI_API_KEY` (see below) |
-| OpenRouter | API key | Set `OPENROUTER_API_KEY` |
-| DeepSeek | API key (opt-in) | Set `DEEPSEEK_API_KEY` + enable in config |
+| Anthropic | `%USERPROFILE%\.claude\.credentials.json` | run `claude` once |
+| OpenAI | `%USERPROFILE%\.codex\auth.json` | run `codex login` once |
+| Z.AI | `ZAI_API_KEY` or `[zai] api_key` | set the key |
+| OpenRouter | `OPENROUTER_API_KEY` or `[openrouter] api_key` | set the key |
+| DeepSeek | `DEEPSEEK_API_KEY` or `[deepseek] api_key` | set the key, enable in config |
 
-For the API-key providers, the easiest way is an environment variable:
+Set API keys via environment variable:
 
 ```powershell
-setx ZAI_API_KEY "your-key-here"
-setx OPENROUTER_API_KEY "your-key-here"
+setx ZAI_API_KEY "your-key"
+setx OPENROUTER_API_KEY "your-key"
 ```
 
-(Open a **new** terminal after `setx` — it doesn't affect the current one.)
+`setx` only affects new terminals. A provider that isn't configured shows
+"login needed" and the others keep working.
 
-If a provider isn't set up, it just shows *"login needed"* in the menu and the
-others keep working — nothing breaks.
+## Config
 
-## Configuration (optional)
+Optional. Copy `config.example.toml` to `%APPDATA%\ai-usagebar\config.toml`.
 
-Everything works with no config. If you want to tweak things, copy
-[`config.example.toml`](config.example.toml) to
-`%APPDATA%\ai-usagebar\config.toml`. You can set:
+- `poll_seconds`: refresh interval, default 60, minimum 15.
+- `[ui] primary`: provider shown first in the tooltip.
+- per-provider `enabled` and inline `api_key`.
 
-- `poll_seconds` — how often it refreshes (default 60).
-- `[ui] primary` — which provider leads the hover tooltip.
-- Per-provider `enabled`, and inline `api_key` if you'd rather not use env vars.
+Same format as the Linux `ai-usagebar`, so an existing config works.
 
-The format matches the Linux `ai-usagebar` config, so an existing file just
-works.
+## Build
 
-## Build it yourself
-
-If you'd rather build from source, install Rust from
-[rustup.rs](https://rustup.rs) (accept the Visual Studio Build Tools prompt),
-then:
+Requires Rust ([rustup.rs](https://rustup.rs), MSVC toolchain).
 
 ```powershell
-git clone https://github.com/FranzoiDev/ai-usagebar-win.git
-cd ai-usagebar-win
 cargo build --release
 .\target\release\ai-usagebar-win.exe
 ```
 
-The release build hides the console window (it's a tray app). While developing,
-run `cargo run` instead so you can see log output, and `cargo test` to run the
-suite.
+Release builds have no console window. Use `cargo run` during development for
+log output, and `cargo test` to run the suite.
 
-## How it works
+## Layout
 
-```
-                ┌──────────────────────────── poll thread ───────────────┐
-%USERPROFILE%\… │ read creds (read-only) → GET usage endpoints (reqwest) │
-  env / config  │ → parse into a VendorSnapshot                          │
-                └───────────────┬────────────────────────────────────────┘
-                                │ EventLoopProxy::send_event(Update)
-                ┌───────────────▼──────────── UI thread (tao) ────────────┐
-                │ render → set tray icon color + tooltip + context menu   │
-                └─────────────────────────────────────────────────────────┘
-```
-
-A background thread polls every provider on an interval and ships the results
-to the UI thread, which owns the tray icon (Win32 requires this) and repaints.
-
-| File | Responsibility |
+| File | Purpose |
 |---|---|
-| `src/usage.rs` | Snapshot model + severity tiers + countdown formatting |
-| `src/creds.rs` | Read-only Claude/Codex credential readers (expiry check, **no refresh**) |
-| `src/config.rs` | Config + API-key / credential-path resolution |
-| `src/vendors/` | One module per provider: endpoint + wire types + parse |
-| `src/render.rs` | Snapshot → tooltip + menu lines + icon severity |
-| `src/tray.rs` | In-code RGBA icon generation (no asset files) |
-| `src/main.rs` | `tao` event loop + background poll thread |
+| `src/usage.rs` | snapshot model, severity tiers, countdown formatting |
+| `src/creds.rs` | read-only Claude/Codex credential readers (no refresh) |
+| `src/config.rs` | config loading, API-key and path resolution |
+| `src/vendors/` | one module per provider: endpoint, types, parse |
+| `src/render.rs` | snapshot -> tooltip, menu lines, icon severity |
+| `src/tray.rs` | RGBA tray icon generated in code |
+| `src/main.rs` | tao event loop and background poll thread |
 
-The usage endpoints are all undocumented (reverse-engineered), so they may
-change over time:
+A background thread polls each provider on an interval and sends results to the
+UI thread, which owns the tray icon and repaints.
+
+## Endpoints
+
+Undocumented, reverse-engineered, may change.
 
 | Provider | Endpoint |
 |---|---|
-| Anthropic | `GET https://api.anthropic.com/api/oauth/usage` (`anthropic-beta: oauth-2025-04-20`) |
-| OpenAI | `GET https://chatgpt.com/backend-api/wham/usage` |
-| Z.AI | `GET https://api.z.ai/api/monitor/usage/quota/limit` (key in `Authorization`, **no** `Bearer`) |
-| OpenRouter | `GET https://openrouter.ai/api/v1/credits` + `/key` |
-| DeepSeek | `GET https://api.deepseek.com/user/balance` |
+| Anthropic | `GET api.anthropic.com/api/oauth/usage` (header `anthropic-beta: oauth-2025-04-20`) |
+| OpenAI | `GET chatgpt.com/backend-api/wham/usage` |
+| Z.AI | `GET api.z.ai/api/monitor/usage/quota/limit` (key in `Authorization`, no `Bearer`) |
+| OpenRouter | `GET openrouter.ai/api/v1/credits` and `/key` |
+| DeepSeek | `GET api.deepseek.com/user/balance` |
 
-## Roadmap
+## License
 
-It's an MVP, but a working one — all five providers, tray icon + tooltip + menu,
-strictly read-only auth. Things I might add next:
-
-- Draw the actual percentage *number* into the tray icon.
-- "Open config" / "Re-login" shortcuts in the menu.
-- Cycling the leading provider, like the Linux version's scroll-to-cycle.
-
-## Credits
-
-Data layer reverse-engineered from
+MIT. Data layer reverse-engineered from
 [akitaonrails/ai-usagebar](https://github.com/akitaonrails/ai-usagebar).
-Built for Windows, MIT-licensed.
