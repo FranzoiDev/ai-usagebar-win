@@ -19,8 +19,14 @@ pub struct Rendered {
     pub tooltip: String,
 }
 
-/// Tray icon color + hover tooltip.
-pub fn render(reports: &[VendorReport], primary: VendorId, now: DateTime<Utc>) -> Rendered {
+/// Tray icon color + hover tooltip. Like the popup, the tooltip lists only
+/// vendors with an identified key/credential (see [`should_show`]).
+pub fn render(
+    reports: &[VendorReport],
+    cfg: &Config,
+    primary: VendorId,
+    now: DateTime<Utc>,
+) -> Rendered {
     let worst = reports
         .iter()
         .filter_map(|r| match &r.state {
@@ -33,14 +39,29 @@ pub fn render(reports: &[VendorReport], primary: VendorId, now: DateTime<Utc>) -
     let mut ordered: Vec<&VendorReport> = reports.iter().collect();
     ordered.sort_by_key(|r| (r.id != primary, VendorId::ALL.iter().position(|v| *v == r.id)));
 
-    let tip_lines: Vec<String> = ordered.iter().map(|r| tooltip_line(r, now)).collect();
+    let tip_lines: Vec<String> = ordered
+        .iter()
+        .filter(|r| should_show(&r.state, cfg, r.id))
+        .map(|r| tooltip_line(r, now))
+        .collect();
     let tooltip = if tip_lines.is_empty() {
-        "ai-usagebar — no vendors enabled".to_string()
+        "ai-usagebar — no models configured".to_string()
     } else {
         tip_lines.join("\n")
     };
 
     Rendered { severity, tooltip }
+}
+
+/// Whether a vendor should surface in the popup/tooltip: it has an identified
+/// key/credential. Unconfigured and login-needed vendors are hidden (they
+/// belong in the settings window instead).
+fn should_show(state: &VendorState, cfg: &Config, id: VendorId) -> bool {
+    match state {
+        VendorState::Ok(_) => true,
+        VendorState::Error(_) => cfg.is_configured(id),
+        VendorState::NeedsLogin(_) => false,
+    }
 }
 
 /// One compact line, e.g. "cld 29% · 1h12m" or "gpt: login needed".
@@ -121,10 +142,13 @@ pub fn popup_model(
 
     let mut vendors = Vec::new();
     for r in ordered {
+        if !should_show(&r.state, cfg, r.id) {
+            continue;
+        }
         match &r.state {
             VendorState::Ok(snap) => vendors.push(ok_card(r.id, snap, now)),
-            // Show configured-but-erroring vendors so problems are visible.
-            VendorState::Error(msg) if cfg.is_configured(r.id) => vendors.push(VendorCard {
+            // Configured-but-erroring vendors show so problems are visible.
+            VendorState::Error(msg) => vendors.push(VendorCard {
                 id: vendor_id_str(r.id),
                 name: r.id.display().to_string(),
                 plan: None,
@@ -133,8 +157,7 @@ pub fn popup_model(
                 bars: Vec::new(),
                 facts: Vec::new(),
             }),
-            // NeedsLogin / unconfigured → omitted from the popup.
-            _ => {}
+            VendorState::NeedsLogin(_) => {}
         }
     }
     PopupModel { vendors }
@@ -414,25 +437,26 @@ mod tests {
     #[test]
     fn severity_tracks_worst_window() {
         let reports = vec![anthropic_report(40, 95)];
-        let r = render(&reports, VendorId::Anthropic, Utc::now());
+        let r = render(&reports, &Config::default(), VendorId::Anthropic, Utc::now());
         assert_eq!(r.severity, Severity::Critical);
     }
 
     #[test]
     fn tooltip_has_compact_line() {
         let reports = vec![anthropic_report(29, 10)];
-        let r = render(&reports, VendorId::Anthropic, Utc::now());
+        let r = render(&reports, &Config::default(), VendorId::Anthropic, Utc::now());
         assert!(r.tooltip.contains("cld 29%"));
     }
 
     #[test]
-    fn needs_login_renders_gracefully() {
+    fn tooltip_hides_unconfigured_login_needed_vendor() {
         let reports = vec![VendorReport {
             id: VendorId::Openai,
             state: VendorState::NeedsLogin("run codex login".into()),
         }];
-        let r = render(&reports, VendorId::Anthropic, Utc::now());
-        assert!(r.tooltip.contains("gpt: login needed"));
+        let r = render(&reports, &Config::default(), VendorId::Anthropic, Utc::now());
+        assert!(!r.tooltip.contains("gpt"));
+        assert_eq!(r.tooltip, "ai-usagebar — no models configured");
         assert_eq!(r.severity, Severity::Low);
     }
 

@@ -128,7 +128,7 @@ fn main() {
             Event::UserEvent(UserEvent::Update(payload)) => {
                 let p = *payload;
                 if let Some(tray) = tray.as_ref() {
-                    let r = render::render(&p.reports, primary_of(&p.cfg), Utc::now());
+                    let r = render::render(&p.reports, &p.cfg, primary_of(&p.cfg), Utc::now());
                     if let Some(icon) = tray::icon_for(r.severity) {
                         let _ = tray.set_icon(Some(icon));
                     }
