@@ -52,6 +52,8 @@ enum UserEvent {
     Update(Box<UpdatePayload>),
     /// Raw JSON message from a WebView's `window.ipc.postMessage`.
     Ipc(String),
+    /// A tray-icon click, forwarded so it wakes the (`Wait`) event loop.
+    Tray(TrayIconEvent),
 }
 
 /// Physical anchor of the tray icon (position + size) for popup placement.
@@ -60,6 +62,16 @@ type Anchor = (PhysicalPosition<f64>, PhysicalSize<u32>);
 fn main() {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
+
+    // Forward tray-icon clicks into the event loop. With `ControlFlow::Wait`
+    // the loop sleeps until an event arrives; tray clicks land on tray-icon's
+    // own window, so without this the loop never wakes and nothing happens.
+    {
+        let proxy = proxy.clone();
+        TrayIconEvent::set_event_handler(Some(move |event| {
+            let _ = proxy.send_event(UserEvent::Tray(event));
+        }));
+    }
 
     // Channel to ask the poll thread for an immediate refresh.
     let (refresh_tx, refresh_rx) = mpsc::channel::<()>();
@@ -98,42 +110,6 @@ fn main() {
     event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::Wait;
 
-        // Toggle the popup on tray clicks.
-        while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
-            // Any click (left or right — there's no context menu) toggles the
-            // popup. Match on button-up so we react once per click.
-            let rect = match ev {
-                TrayIconEvent::Click {
-                    rect,
-                    button_state: MouseButtonState::Up,
-                    ..
-                }
-                | TrayIconEvent::DoubleClick { rect, .. } => rect,
-                _ => continue,
-            };
-            anchor = Some((rect.position, rect.size));
-
-            if popup_visible {
-                hide_popup(&popup, &mut popup_visible, &mut last_hidden);
-            } else if last_hidden.map(|t| t.elapsed() < Duration::from_millis(300)).unwrap_or(false) {
-                // This click is the one that just blurred/closed the popup.
-                last_hidden = None;
-            } else {
-                if popup.is_none() {
-                    popup = create_popup(target, &proxy);
-                }
-                if let Some((w, wv)) = &popup {
-                    position_popup(w, &anchor);
-                    w.set_visible(true);
-                    w.set_focus();
-                    if let Some(p) = &latest {
-                        push_popup(wv, p);
-                    }
-                    popup_visible = true;
-                }
-            }
-        }
-
         match event {
             Event::NewEvents(StartCause::Init) => {
                 let mut builder = TrayIconBuilder::new().with_tooltip("ai-usagebar — loading…");
@@ -162,6 +138,45 @@ fn main() {
                     push_popup(wv, &p);
                 }
                 latest = Some(p);
+            }
+
+            Event::UserEvent(UserEvent::Tray(ev)) => {
+                // Any click (left or right — there's no context menu) toggles
+                // the popup. React on button-up so it fires once per click.
+                let rect = match ev {
+                    TrayIconEvent::Click {
+                        rect,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    }
+                    | TrayIconEvent::DoubleClick { rect, .. } => Some(rect),
+                    _ => None,
+                };
+                if let Some(rect) = rect {
+                    anchor = Some((rect.position, rect.size));
+                    if popup_visible {
+                        hide_popup(&popup, &mut popup_visible, &mut last_hidden);
+                    } else if last_hidden
+                        .map(|t| t.elapsed() < Duration::from_millis(300))
+                        .unwrap_or(false)
+                    {
+                        // This click is the one that just blurred the popup.
+                        last_hidden = None;
+                    } else {
+                        if popup.is_none() {
+                            popup = create_popup(target, &proxy);
+                        }
+                        if let Some((w, wv)) = &popup {
+                            position_popup(w, &anchor);
+                            w.set_visible(true);
+                            w.set_focus();
+                            if let Some(p) = &latest {
+                                push_popup(wv, p);
+                            }
+                            popup_visible = true;
+                        }
+                    }
+                }
             }
 
             Event::UserEvent(UserEvent::Ipc(msg)) => {
