@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="AiUsageBar.Views.SettingsWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:AiUsageBar.Views"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Grid Background="{StaticResource BgBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ScrollViewer Grid.Row="0" Padding="18" VerticalScrollBarVisibility="Auto">
+            <StackPanel Spacing="12">
+
+                <TextBlock Text="Refresh interval (seconds)" Foreground="{StaticResource MutedBrush}" FontSize="12" />
+                <NumberBox
+                    x:Name="PollBox"
+                    Minimum="15"
+                    Maximum="86400"
+                    SpinButtonPlacementMode="Inline"
+                    Width="160"
+                    HorizontalAlignment="Left" />
+
+                <TextBlock Text="Primary (tray tooltip)" Foreground="{StaticResource MutedBrush}" FontSize="12" />
+                <ComboBox x:Name="PrimaryBox" Width="220" HorizontalAlignment="Left" />
+
+                <ItemsControl x:Name="VendorsList" Margin="0,8,0,0">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Background="{StaticResource CardBrush}" CornerRadius="8" Padding="12" Margin="0,0,0,10">
+                                <StackPanel Spacing="6">
+                                    <CheckBox
+                                        Content="{Binding NameWithBadge}"
+                                        IsChecked="{Binding Enabled, Mode=TwoWay}"
+                                        Foreground="{StaticResource TextBrush}" />
+
+                                    <TextBlock
+                                        Text="{Binding Status}"
+                                        Foreground="{StaticResource MutedBrush}"
+                                        FontSize="12"
+                                        TextWrapping="Wrap"
+                                        Visibility="{Binding HasStatus, Converter={StaticResource BoolToVisibility}}" />
+
+                                    <!-- API-key vendors -->
+                                    <StackPanel
+                                        Spacing="4"
+                                        Visibility="{Binding IsApiKey, Converter={StaticResource BoolToVisibility}}">
+                                        <TextBlock Text="Environment variable" Foreground="{StaticResource MutedBrush}" FontSize="12" />
+                                        <TextBox Text="{Binding ApiKeyEnvText, Mode=TwoWay}" Width="260" HorizontalAlignment="Left" />
+
+                                        <TextBlock Text="API key (optional — overrides env var)" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,4,0,0" />
+                                        <PasswordBox Password="{Binding ApiKeyText, Mode=TwoWay}" />
+
+                                        <StackPanel Spacing="4" Visibility="{Binding ShowPlanTier, Converter={StaticResource BoolToVisibility}}">
+                                            <TextBlock Text="Plan tier (display only)" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,4,0,0" />
+                                            <TextBox Text="{Binding PlanTierText, Mode=TwoWay}" Width="180" HorizontalAlignment="Left" />
+                                        </StackPanel>
+                                    </StackPanel>
+
+                                    <!-- OAuth vendors -->
+                                    <TextBlock
+                                        Text="{Binding Hint}"
+                                        Foreground="{StaticResource MutedBrush}"
+                                        FontSize="12"
+                                        TextWrapping="Wrap"
+                                        Visibility="{Binding IsOAuth, Converter={StaticResource BoolToVisibility}}" />
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10" Padding="18">
+            <Button Content="Close" Click="OnClose" />
+            <Button Content="Save" Click="OnSave" Style="{StaticResource AccentButtonStyle}" />
+        </StackPanel>
+    </Grid>
+</Window>

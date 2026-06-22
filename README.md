@@ -3,52 +3,35 @@
 Windows system-tray app that shows AI plan usage for Anthropic (Claude),
 OpenAI (Codex), Z.AI (GLM), OpenRouter, and DeepSeek.
 
-Single `.exe`, no installer, no runtime. Written in Rust with
-[`tray-icon`](https://crates.io/crates/tray-icon) and
-[`tao`](https://crates.io/crates/tao) over the Win32 `Shell_NotifyIcon` API.
-The popup and settings windows are 100% native: raw Win32 controls (real
-progress bars, owner-drawn buttons) via
-[`windows-sys`](https://crates.io/crates/windows-sys), with DWM dark mode and
-rounded corners — no web engine. The data layer is a Windows port of the Linux
-[`ai-usagebar`](https://github.com/akitaonrails/ai-usagebar) Waybar widget.
+Built with **C# and WinUI 3** (Windows App SDK) on .NET 8. The tray icon uses
+[`H.NotifyIcon`](https://github.com/HavenDV/H.NotifyIcon); config is TOML via
+[`Tomlyn`](https://github.com/xoofx/Tomlyn) and stays compatible with the Linux
+[`ai-usagebar`](https://github.com/akitaonrails/ai-usagebar) Waybar widget. The
+popup and settings windows are native XAML.
+
+> **History:** this started as a Rust + raw-Win32 app. Maintaining the
+> hand-rolled Win32 UI in Rust turned out to be too much work, so I gave up on
+> that stack and migrated the project to a more modern, productive one — C# +
+> WinUI 3. The data layer (vendor endpoints, credential parsing, severity model)
+> is a faithful port of the original Rust code; see the git history for the
+> Rust version.
 
 The app is read-only. It reads the access tokens the `claude` / `codex` CLIs
-already wrote to disk and never refreshes or rewrites them, so it cannot log
-you out. An expired token shows a "re-login" hint instead of being refreshed.
+already wrote to disk and never refreshes or rewrites them, so it cannot log you
+out. An expired token shows a "re-login" hint instead of being refreshed.
 
 ## UI
 
 - **Hover** the tray icon for a one-line-per-provider tooltip.
 - **Click** the tray icon for a popup with a card and progress bars per
   provider. Only providers with an identified key/credential are shown.
-- **Settings** (button in the popup) opens a regular OS window to enable
-  providers and manage API keys — including providers that aren't configured
-  yet. Changes are written to `config.toml` and applied without a restart.
+- **Settings** (button in the popup) opens a window to enable providers and
+  manage API keys — including providers that aren't configured yet. Changes are
+  written to `config.toml` and applied without a restart.
 - **Quit** (button in the popup) exits the whole process.
 
 The icon color tracks worst-case usage: green <50%, yellow >=50%, orange >=75%,
 red >=90%.
-
-## Screenshots
-
-Popup (progress bars):
-
-<!-- screenshots/popup.png -->
-![popup](screenshots/popup.png)
-
-Settings window:
-
-<!-- screenshots/settings.png -->
-![settings](screenshots/settings.png)
-
-## Install
-
-Download `ai-usagebar-win.exe` from
-[Releases](https://github.com/FranzoiDev/ai-usagebar-win/releases) and run it.
-
-The binary is unsigned, so SmartScreen may warn on first run: "More info" ->
-"Run anyway". To start it with Windows, put a shortcut to the `.exe` in
-`shell:startup` (`Win+R` -> `shell:startup`).
 
 ## Providers
 
@@ -83,33 +66,62 @@ Settings window edits this same file, so hand-edits and the UI stay in sync.
 
 ## Build
 
-Requires Rust ([rustup.rs](https://rustup.rs), MSVC toolchain).
+Requires:
+
+- **.NET 8 SDK**
+- **Windows 10 2004 (19041) or later** — WinUI 3 is Windows-only.
+- **Visual Studio 2022** with the *.NET Desktop Development* and *Windows App
+  SDK / WinUI* components (or the `Microsoft.WindowsAppSDK` NuGet alone for CLI
+  builds).
 
 ```powershell
-cargo build --release
-.\target\release\ai-usagebar-win.exe
+# from the repo root
+dotnet restore AiUsageBar.sln
+dotnet build  AiUsageBar.sln -c Release -p:Platform=x64
+dotnet test   AiUsageBar.Tests/AiUsageBar.Tests.csproj -c Release -p:Platform=x64
+
+# run
+dotnet run --project AiUsageBar/AiUsageBar.csproj -p:Platform=x64
 ```
 
-Release builds have no console window. Use `cargo run` during development for
-log output, and `cargo test` to run the suite.
+Or open `AiUsageBar.sln` in Visual Studio, set the platform to **x64**, and
+press F5.
+
+## Deploy
+
+WinUI 3 cannot ship as a single static `.exe` like the old Rust build — it
+depends on the Windows App SDK runtime. This project is configured **unpackaged
+and self-contained** (`WindowsPackageType=None`, `WindowsAppSDKSelfContained=true`),
+so the published output is a *folder* that runs without any separate runtime
+install:
+
+```powershell
+dotnet publish AiUsageBar/AiUsageBar.csproj -c Release -p:Platform=x64 -r win-x64 --self-contained
+# -> AiUsageBar/bin/x64/Release/net8.0-windows10.0.19041.0/win-x64/publish/
+# run ai-usagebar-win.exe from that folder
+```
+
+To start it with Windows, put a shortcut to `ai-usagebar-win.exe` in
+`shell:startup` (`Win+R` -> `shell:startup`).
 
 ## Layout
 
-| File | Purpose |
+| Path | Purpose |
 |---|---|
-| `src/usage.rs` | snapshot model, severity tiers, countdown formatting |
-| `src/creds.rs` | read-only Claude/Codex credential readers (no refresh) |
-| `src/config.rs` | config loading, API-key and path resolution |
-| `src/vendors/` | one module per provider: endpoint, types, parse |
-| `src/render.rs` | snapshot -> tooltip + popup/settings view-models, icon severity |
-| `src/winui_win.rs` | native Win32 popup + settings windows (Windows only) |
-| `src/winui_stub.rs` | no-op UI shims so the crate builds/tests off-Windows |
-| `src/tray.rs` | RGBA tray icon generated in code |
-| `src/main.rs` | tao event loop, tray icon, background poll thread |
-
-A background thread polls each provider on an interval and sends results to the
-UI thread, which owns the tray icon and the native windows. The Win32 window
-procedures handle clicks directly (refresh / open settings / save / quit).
+| `Models/Usage.cs` | snapshot model, severity tiers, countdown formatting |
+| `Models/VendorId.cs` | provider ids + display/slug helpers |
+| `Models/VendorReport.cs` | per-vendor poll result (Ok / NeedsLogin / Error) |
+| `Models/ViewModels.cs` | popup + settings view-models bound by XAML |
+| `Services/Config.cs` | TOML config load/save, API-key and path resolution |
+| `Services/Creds.cs` | read-only Claude/Codex credential readers (no refresh) |
+| `Services/Vendors/` | one file per provider: endpoint, parse, snapshot |
+| `Services/Renderer.cs` | reports -> tooltip + popup/settings view-models |
+| `Services/TrayIconFactory.cs` | severity-tinted tray icon drawn in code |
+| `Services/TrayService.cs` | H.NotifyIcon wrapper |
+| `Services/Poller.cs` | background polling loop with on-demand refresh |
+| `Views/PopupWindow.xaml` | frameless popup anchored near the tray |
+| `Views/SettingsWindow.xaml` | provider enable + API-key form |
+| `App.xaml.cs` | tray-first app wiring (no main window) |
 
 ## Endpoints
 

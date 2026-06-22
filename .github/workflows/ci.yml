@@ -6,14 +6,20 @@ on:
   pull_request:
 
 jobs:
-  test:
+  build-test:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-dotnet@v4
         with:
-          components: clippy
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore AiUsageBar.sln
+
+      - name: Build
+        run: dotnet build AiUsageBar.sln -c Release -p:Platform=x64 --no-restore
+
       - name: Test
-        run: cargo test --locked
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: dotnet test AiUsageBar.Tests/AiUsageBar.Tests.csproj -c Release -p:Platform=x64 --no-build
