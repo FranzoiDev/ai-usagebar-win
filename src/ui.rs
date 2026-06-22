@@ -40,21 +40,7 @@ pub const POPUP_HTML: &str = r##"<!doctype html>
     border-radius: 14px;
     overflow: hidden;
   }
-  header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 12px 14px 8px;
-  }
-  header .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
-  header h1 { font-size: 13px; font-weight: 600; letter-spacing: .2px; }
-  header .spacer { flex: 1; }
-  header button.icon {
-    background: transparent; border: none; color: var(--muted);
-    cursor: pointer; font-size: 14px; padding: 4px 6px; border-radius: 8px;
-  }
-  header button.icon:hover { background: var(--card2); color: var(--text); }
-  main { padding: 4px 12px 8px; display: flex; flex-direction: column; gap: 10px; }
+  main { padding: 12px 12px 8px; display: flex; flex-direction: column; gap: 10px; }
   .card {
     background: var(--card);
     border: 1px solid var(--line);
@@ -95,6 +81,8 @@ pub const POPUP_HTML: &str = r##"<!doctype html>
     padding: 8px 6px; font-size: 12px; cursor: pointer;
   }
   footer button:hover { background: var(--card2); }
+  footer button.icon { flex: 0 0 44px; font-size: 15px; color: var(--muted); }
+  footer button.icon:hover { color: var(--text); }
   footer button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   footer button.primary:hover { filter: brightness(1.08); }
   footer button.quit:hover { background: rgba(244,67,54,.18); border-color: rgba(244,67,54,.5); color: #ff8a80; }
@@ -102,14 +90,9 @@ pub const POPUP_HTML: &str = r##"<!doctype html>
 </head>
 <body>
   <div id="shell">
-    <header>
-      <span class="dot"></span>
-      <h1>AI Usage</h1>
-      <span class="spacer"></span>
-      <button class="icon" id="refresh" title="Refresh now">⟳</button>
-    </header>
     <main id="list"></main>
     <footer>
+      <button class="icon" id="refresh" title="Refresh now">⟳</button>
       <button class="primary" id="settings">⚙ Settings</button>
       <button class="quit" id="quit">⏻ Quit</button>
     </footer>

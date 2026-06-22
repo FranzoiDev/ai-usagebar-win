@@ -106,6 +106,9 @@ fn main() {
     let mut anchor: Option<Anchor> = None;
     // Debounce: a tray click that blurs an open popup must not reopen it.
     let mut last_hidden: Option<Instant> = None;
+    // Grace window after showing: ignore the transient focus-loss that Windows
+    // sometimes fires right after a tray popup appears (which closed it instantly).
+    let mut last_shown: Option<Instant> = None;
 
     event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -174,6 +177,7 @@ fn main() {
                                 push_popup(wv, p);
                             }
                             popup_visible = true;
+                            last_shown = Some(Instant::now());
                         }
                     }
                 }
@@ -255,7 +259,13 @@ fn main() {
                     && window_id == w.id()
                     && matches!(event, WindowEvent::Focused(false))
                 {
-                    hide_popup(&popup, &mut popup_visible, &mut last_hidden);
+                    // Ignore the spurious blur that can arrive right after show.
+                    let in_grace = last_shown
+                        .map(|t| t.elapsed() < Duration::from_millis(400))
+                        .unwrap_or(false);
+                    if !in_grace {
+                        hide_popup(&popup, &mut popup_visible, &mut last_hidden);
+                    }
                 }
                 if let Some((w, _)) = &settings
                     && window_id == w.id()
@@ -341,8 +351,10 @@ fn create_popup(
         .with_inner_size(LogicalSize::new(POPUP_W, 200.0));
     #[cfg(windows)]
     {
+        // No undecorated shadow: on Windows 11 it draws a light 1px system
+        // border that shows as an ugly white line around the dark popup.
         use tao::platform::windows::WindowBuilderExtWindows;
-        builder = builder.with_skip_taskbar(true).with_undecorated_shadow(true);
+        builder = builder.with_skip_taskbar(true);
     }
     let window = match builder.build(target) {
         Ok(w) => w,
