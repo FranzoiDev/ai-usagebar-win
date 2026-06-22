@@ -3,12 +3,13 @@
 Windows system-tray app that shows AI plan usage for Anthropic (Claude),
 OpenAI (Codex), Z.AI (GLM), OpenRouter, and DeepSeek.
 
-Single `.exe`, no installer. Written in Rust with
-[`tray-icon`](https://crates.io/crates/tray-icon),
-[`tao`](https://crates.io/crates/tao) and
-[`wry`](https://crates.io/crates/wry) over the Win32 `Shell_NotifyIcon` API.
-The UI is rendered in WebView2 (bundled with Windows 10/11). The data layer is
-a Windows port of the Linux
+Single `.exe`, no installer, no runtime. Written in Rust with
+[`tray-icon`](https://crates.io/crates/tray-icon) and
+[`tao`](https://crates.io/crates/tao) over the Win32 `Shell_NotifyIcon` API.
+The popup and settings windows are 100% native: raw Win32 controls (real
+progress bars, owner-drawn buttons) via
+[`windows-sys`](https://crates.io/crates/windows-sys), with DWM dark mode and
+rounded corners — no web engine. The data layer is a Windows port of the Linux
 [`ai-usagebar`](https://github.com/akitaonrails/ai-usagebar) Waybar widget.
 
 The app is read-only. It reads the access tokens the `claude` / `codex` CLIs
@@ -101,13 +102,14 @@ log output, and `cargo test` to run the suite.
 | `src/config.rs` | config loading, API-key and path resolution |
 | `src/vendors/` | one module per provider: endpoint, types, parse |
 | `src/render.rs` | snapshot -> tooltip + popup/settings view-models, icon severity |
-| `src/ui.rs` | embedded HTML/CSS/JS for the popup and settings WebViews |
+| `src/winui_win.rs` | native Win32 popup + settings windows (Windows only) |
+| `src/winui_stub.rs` | no-op UI shims so the crate builds/tests off-Windows |
 | `src/tray.rs` | RGBA tray icon generated in code |
-| `src/main.rs` | tao event loop, WebView windows, IPC, background poll thread |
+| `src/main.rs` | tao event loop, tray icon, background poll thread |
 
 A background thread polls each provider on an interval and sends results to the
-UI thread, which owns the tray icon and the WebView windows. WebView pages talk
-back over `window.ipc.postMessage` (refresh / open settings / save / quit).
+UI thread, which owns the tray icon and the native windows. The Win32 window
+procedures handle clicks directly (refresh / open settings / save / quit).
 
 ## Endpoints
 

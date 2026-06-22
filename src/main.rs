@@ -8,8 +8,8 @@
 //!
 //! UI: a background thread polls every vendor on an interval and ships results
 //! to the main (UI) thread via the event-loop proxy. The main thread owns the
-//! tray icon plus two WebView windows — a frameless popup shown near the tray
-//! (usage cards + progress bars) and a regular OS window for settings.
+//! tray icon; the popup and settings windows are drawn with raw Win32 controls
+//! (native progress bars, buttons) — see `winui_win.rs`.
 
 // No console window in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -18,46 +18,42 @@ mod config;
 mod creds;
 mod render;
 mod tray;
-mod ui;
 mod usage;
 mod vendors;
 
+#[cfg(windows)]
+#[path = "winui_win.rs"]
+mod winui;
+#[cfg(not(windows))]
+#[path = "winui_stub.rs"]
+mod winui;
+
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
-use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use tao::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
-use tao::event::{Event, StartCause, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
-use tao::window::{Window, WindowBuilder};
+use tao::event::{Event, StartCause};
+use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::{MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use wry::{WebView, WebViewBuilder};
 
 use crate::config::Config;
 use crate::usage::Severity;
 use crate::vendors::{VendorId, VendorReport};
 
-/// Popup width (logical px). Height is content-driven via a `resize` message.
-const POPUP_W: f64 = 380.0;
-
 /// One poll result handed from the poll thread to the UI thread.
-struct UpdatePayload {
-    cfg: Config,
-    reports: Vec<VendorReport>,
+pub struct UpdatePayload {
+    pub cfg: Config,
+    pub reports: Vec<VendorReport>,
 }
 
-/// Events sent to the UI thread.
-enum UserEvent {
+/// Events delivered to the UI thread via the event-loop proxy.
+pub enum UserEvent {
     Update(Box<UpdatePayload>),
-    /// Raw JSON message from a WebView's `window.ipc.postMessage`.
-    Ipc(String),
     /// A tray-icon click, forwarded so it wakes the (`Wait`) event loop.
     Tray(TrayIconEvent),
+    /// The native Quit button was pressed.
+    Quit,
 }
-
-/// Physical anchor of the tray icon (position + size) for popup placement.
-type Anchor = (PhysicalPosition<f64>, PhysicalSize<u32>);
 
 fn main() {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
@@ -65,7 +61,7 @@ fn main() {
 
     // Forward tray-icon clicks into the event loop. With `ControlFlow::Wait`
     // the loop sleeps until an event arrives; tray clicks land on tray-icon's
-    // own window, so without this the loop never wakes and nothing happens.
+    // own window, so without this the loop never wakes.
     {
         let proxy = proxy.clone();
         TrayIconEvent::set_event_handler(Some(move |event| {
@@ -99,18 +95,8 @@ fn main() {
     }
 
     let mut tray: Option<TrayIcon> = None;
-    let mut popup: Option<(Window, WebView)> = None;
-    let mut settings: Option<(Window, WebView)> = None;
-    let mut latest: Option<UpdatePayload> = None;
-    let mut popup_visible = false;
-    let mut anchor: Option<Anchor> = None;
-    // Debounce: a tray click that blurs an open popup must not reopen it.
-    let mut last_hidden: Option<Instant> = None;
-    // Grace window after showing: ignore the transient focus-loss that Windows
-    // sometimes fires right after a tray popup appears (which closed it instantly).
-    let mut last_shown: Option<Instant> = None;
 
-    event_loop.run(move |event, target, control_flow| {
+    event_loop.run(move |event, _target, control_flow| {
         *control_flow = ControlFlow::Wait;
 
         match event {
@@ -124,8 +110,10 @@ fn main() {
                     Err(e) => {
                         eprintln!("failed to create tray icon: {e}");
                         *control_flow = ControlFlow::Exit;
+                        return;
                     }
                 }
+                winui::init(proxy.clone(), refresh_tx.clone());
             }
 
             Event::UserEvent(UserEvent::Update(payload)) => {
@@ -137,10 +125,7 @@ fn main() {
                     }
                     let _ = tray.set_tooltip(Some(clamp_tooltip(&r.tooltip)));
                 }
-                if popup_visible && let Some((_, wv)) = &popup {
-                    push_popup(wv, &p);
-                }
-                latest = Some(p);
+                winui::set_data(p);
             }
 
             Event::UserEvent(UserEvent::Tray(ev)) => {
@@ -156,123 +141,17 @@ fn main() {
                     _ => None,
                 };
                 if let Some(rect) = rect {
-                    anchor = Some((rect.position, rect.size));
-                    if popup_visible {
-                        hide_popup(&popup, &mut popup_visible, &mut last_hidden);
-                    } else if last_hidden
-                        .map(|t| t.elapsed() < Duration::from_millis(300))
-                        .unwrap_or(false)
-                    {
-                        // This click is the one that just blurred the popup.
-                        last_hidden = None;
-                    } else {
-                        if popup.is_none() {
-                            popup = create_popup(target, &proxy);
-                        }
-                        if let Some((w, wv)) = &popup {
-                            position_popup(w, &anchor);
-                            w.set_visible(true);
-                            w.set_focus();
-                            if let Some(p) = &latest {
-                                push_popup(wv, p);
-                            }
-                            popup_visible = true;
-                            last_shown = Some(Instant::now());
-                        }
-                    }
+                    winui::toggle_popup(
+                        rect.position.x as i32,
+                        rect.position.y as i32,
+                        rect.size.width as i32,
+                        rect.size.height as i32,
+                    );
                 }
             }
 
-            Event::UserEvent(UserEvent::Ipc(msg)) => {
-                let v: serde_json::Value = serde_json::from_str(&msg).unwrap_or_default();
-                match v.get("cmd").and_then(|c| c.as_str()).unwrap_or("") {
-                    "refresh" => {
-                        let _ = refresh_tx.send(());
-                    }
-                    "popupReady" => {
-                        if let (Some((_, wv)), Some(p)) = (&popup, &latest) {
-                            push_popup(wv, p);
-                        }
-                    }
-                    "resize" => {
-                        if let (Some(h), Some((w, _))) =
-                            (v.get("h").and_then(|h| h.as_f64()), &popup)
-                        {
-                            w.set_inner_size(LogicalSize::new(POPUP_W, h.clamp(80.0, 760.0)));
-                            position_popup(w, &anchor);
-                        }
-                    }
-                    "hide" => hide_popup(&popup, &mut popup_visible, &mut last_hidden),
-                    "settings" => {
-                        hide_popup(&popup, &mut popup_visible, &mut last_hidden);
-                        if settings.is_none() {
-                            settings = create_settings(target, &proxy);
-                        }
-                        if let Some((w, _)) = &settings {
-                            w.set_visible(true);
-                            w.set_focus();
-                        }
-                        push_settings_now(&settings, &latest);
-                    }
-                    "settingsReady" => push_settings_now(&settings, &latest),
-                    "closeSettings" => {
-                        if let Some((w, _)) = &settings {
-                            w.set_visible(false);
-                        }
-                    }
-                    "save" => {
-                        if let Some(cfg_val) = v.get("config") {
-                            match serde_json::from_value::<Config>(cfg_val.clone()) {
-                                Ok(cfg) => {
-                                    let cfg = cfg.sanitized();
-                                    if let Err(e) = cfg.save() {
-                                        eprintln!("failed to save config: {e}");
-                                    }
-                                    // Reflect new "configured" state immediately.
-                                    if let Some((_, swv)) = &settings {
-                                        let reports = latest
-                                            .as_ref()
-                                            .map(|p| p.reports.clone())
-                                            .unwrap_or_default();
-                                        let model = render::settings_model(&cfg, &reports);
-                                        if let Ok(json) = serde_json::to_string(&model) {
-                                            let _ = swv.evaluate_script(&format!(
-                                                "window.__config && window.__config({json})"
-                                            ));
-                                        }
-                                    }
-                                    let _ = refresh_tx.send(()); // repoll with new config
-                                }
-                                Err(e) => eprintln!("invalid settings payload: {e}"),
-                            }
-                        }
-                    }
-                    "quit" => {
-                        *control_flow = ControlFlow::Exit;
-                    }
-                    _ => {}
-                }
-            }
-
-            Event::WindowEvent { window_id, event, .. } => {
-                if let Some((w, _)) = &popup
-                    && window_id == w.id()
-                    && matches!(event, WindowEvent::Focused(false))
-                {
-                    // Ignore the spurious blur that can arrive right after show.
-                    let in_grace = last_shown
-                        .map(|t| t.elapsed() < Duration::from_millis(400))
-                        .unwrap_or(false);
-                    if !in_grace {
-                        hide_popup(&popup, &mut popup_visible, &mut last_hidden);
-                    }
-                }
-                if let Some((w, _)) = &settings
-                    && window_id == w.id()
-                    && matches!(event, WindowEvent::CloseRequested)
-                {
-                    w.set_visible(false);
-                }
+            Event::UserEvent(UserEvent::Quit) => {
+                *control_flow = ControlFlow::Exit;
             }
 
             _ => {}
@@ -282,137 +161,6 @@ fn main() {
 
 fn primary_of(cfg: &Config) -> VendorId {
     cfg.ui.primary.unwrap_or(VendorId::Anthropic)
-}
-
-fn hide_popup(
-    popup: &Option<(Window, WebView)>,
-    visible: &mut bool,
-    last_hidden: &mut Option<Instant>,
-) {
-    if let Some((w, _)) = popup {
-        w.set_visible(false);
-    }
-    if *visible {
-        *last_hidden = Some(Instant::now());
-    }
-    *visible = false;
-}
-
-fn push_popup(wv: &WebView, p: &UpdatePayload) {
-    let model = render::popup_model(&p.reports, &p.cfg, primary_of(&p.cfg), Utc::now());
-    if let Ok(json) = serde_json::to_string(&model) {
-        let _ = wv.evaluate_script(&format!("window.__data && window.__data({json})"));
-    }
-}
-
-fn push_settings_now(settings: &Option<(Window, WebView)>, latest: &Option<UpdatePayload>) {
-    let Some((_, wv)) = settings else { return };
-    let (cfg, reports) = match latest {
-        Some(p) => (p.cfg.clone(), p.reports.clone()),
-        None => (Config::load(), Vec::new()),
-    };
-    let model = render::settings_model(&cfg, &reports);
-    if let Ok(json) = serde_json::to_string(&model) {
-        let _ = wv.evaluate_script(&format!("window.__config && window.__config({json})"));
-    }
-}
-
-/// Place the popup centered above the tray icon, clamped to the monitor.
-fn position_popup(w: &Window, anchor: &Option<Anchor>) {
-    let Some((pos, isz)) = anchor else { return };
-    let size = w.outer_size();
-    let margin = 10.0;
-    let mut x = pos.x + isz.width as f64 / 2.0 - size.width as f64 / 2.0;
-    let mut y = pos.y - size.height as f64 - margin;
-    if let Some(mon) = w.current_monitor() {
-        let ms = mon.size();
-        let mp = mon.position();
-        let max_x = mp.x as f64 + ms.width as f64 - size.width as f64 - margin;
-        x = x.min(max_x);
-        // Tray at the top of the screen → drop the popup below the icon.
-        if y < mp.y as f64 + margin {
-            y = pos.y + isz.height as f64 + margin;
-        }
-    }
-    w.set_outer_position(PhysicalPosition::new(x.max(10.0), y.max(10.0)));
-}
-
-fn create_popup(
-    target: &EventLoopWindowTarget<UserEvent>,
-    proxy: &EventLoopProxy<UserEvent>,
-) -> Option<(Window, WebView)> {
-    #[cfg_attr(not(windows), allow(unused_mut))]
-    let mut builder = WindowBuilder::new()
-        .with_decorations(false)
-        .with_resizable(false)
-        .with_always_on_top(true)
-        .with_transparent(true)
-        .with_visible(false)
-        .with_inner_size(LogicalSize::new(POPUP_W, 200.0));
-    #[cfg(windows)]
-    {
-        // No undecorated shadow: on Windows 11 it draws a light 1px system
-        // border that shows as an ugly white line around the dark popup.
-        use tao::platform::windows::WindowBuilderExtWindows;
-        builder = builder.with_skip_taskbar(true);
-    }
-    let window = match builder.build(target) {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("failed to create popup window: {e}");
-            return None;
-        }
-    };
-    let webview = match webview_builder(proxy)
-        .with_transparent(true)
-        .with_html(ui::POPUP_HTML)
-        .build(&window)
-    {
-        Ok(wv) => wv,
-        Err(e) => {
-            eprintln!("failed to create popup webview: {e}");
-            return None;
-        }
-    };
-    Some((window, webview))
-}
-
-fn create_settings(
-    target: &EventLoopWindowTarget<UserEvent>,
-    proxy: &EventLoopProxy<UserEvent>,
-) -> Option<(Window, WebView)> {
-    let window = match WindowBuilder::new()
-        .with_title("AI Usage — Settings")
-        .with_inner_size(LogicalSize::new(560.0, 640.0))
-        .with_min_inner_size(LogicalSize::new(460.0, 420.0))
-        .with_visible(false)
-        .build(target)
-    {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("failed to create settings window: {e}");
-            return None;
-        }
-    };
-    let webview = match webview_builder(proxy)
-        .with_html(ui::SETTINGS_HTML)
-        .build(&window)
-    {
-        Ok(wv) => wv,
-        Err(e) => {
-            eprintln!("failed to create settings webview: {e}");
-            return None;
-        }
-    };
-    Some((window, webview))
-}
-
-/// A WebViewBuilder whose IPC handler forwards messages to the event loop.
-fn webview_builder<'a>(proxy: &EventLoopProxy<UserEvent>) -> WebViewBuilder<'a> {
-    let proxy = proxy.clone();
-    WebViewBuilder::new().with_ipc_handler(move |req| {
-        let _ = proxy.send_event(UserEvent::Ipc(req.into_body()));
-    })
 }
 
 /// Win32 tray tooltips are length-limited (~127 chars). Trim defensively.
