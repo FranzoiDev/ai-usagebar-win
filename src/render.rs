@@ -1,9 +1,15 @@
-//! Turn vendor reports into what the tray shows: the worst severity (icon
-//! color), a compact tooltip, and the detailed per-vendor menu lines.
+//! Turn vendor reports into what the UI shows.
+//!
+//! Two consumers:
+//!   * the **tray** wants the worst severity (icon color) + a compact tooltip;
+//!   * the **WebView popup / settings** want structured, serializable models
+//!     that the embedded HTML renders into cards + progress bars.
 
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 
-use crate::usage::{fmt_reset, severity_for, Severity, VendorSnapshot};
+use crate::config::Config;
+use crate::usage::{fmt_reset, severity_for, Severity, UsageWindow, VendorSnapshot};
 use crate::vendors::{VendorId, VendorReport, VendorState};
 
 pub struct Rendered {
@@ -11,12 +17,10 @@ pub struct Rendered {
     pub severity: Severity,
     /// Short multi-line tooltip (kept compact for the Win32 tooltip limit).
     pub tooltip: String,
-    /// One block of detailed lines per vendor, for the context menu.
-    pub menu_lines: Vec<String>,
 }
 
+/// Tray icon color + hover tooltip.
 pub fn render(reports: &[VendorReport], primary: VendorId, now: DateTime<Utc>) -> Rendered {
-    // Worst percentage across all successful snapshots drives the icon.
     let worst = reports
         .iter()
         .filter_map(|r| match &r.state {
@@ -26,31 +30,17 @@ pub fn render(reports: &[VendorReport], primary: VendorId, now: DateTime<Utc>) -
         .max();
     let severity = worst.map(severity_for).unwrap_or(Severity::Low);
 
-    // Tooltip: primary vendor first, then a one-liner per other vendor.
     let mut ordered: Vec<&VendorReport> = reports.iter().collect();
     ordered.sort_by_key(|r| (r.id != primary, VendorId::ALL.iter().position(|v| *v == r.id)));
 
-    let mut tip_lines = Vec::new();
-    let mut menu_lines = Vec::new();
-    for r in &ordered {
-        tip_lines.push(tooltip_line(r, now));
-        menu_lines.extend(menu_block(r, now));
-        menu_lines.push(String::new()); // blank separator between vendors
-    }
-    if menu_lines.last().map(|s| s.is_empty()).unwrap_or(false) {
-        menu_lines.pop();
-    }
+    let tip_lines: Vec<String> = ordered.iter().map(|r| tooltip_line(r, now)).collect();
     let tooltip = if tip_lines.is_empty() {
         "ai-usagebar — no vendors enabled".to_string()
     } else {
         tip_lines.join("\n")
     };
 
-    Rendered {
-        severity,
-        tooltip,
-        menu_lines,
-    }
+    Rendered { severity, tooltip }
 }
 
 /// One compact line, e.g. "cld 29% · 1h12m" or "gpt: login needed".
@@ -82,79 +72,303 @@ fn tooltip_line(r: &VendorReport, now: DateTime<Utc>) -> String {
     }
 }
 
-/// Detailed multi-line block for the context menu.
-fn menu_block(r: &VendorReport, now: DateTime<Utc>) -> Vec<String> {
-    let mut out = Vec::new();
-    match &r.state {
-        VendorState::NeedsLogin(msg) => {
-            out.push(format!("{}  —  {}", r.id.display(), msg));
-        }
-        VendorState::Error(msg) => {
-            out.push(format!("{}  —  error: {}", r.id.display(), msg));
-        }
-        VendorState::Ok(snap) => match snap {
-            VendorSnapshot::Anthropic(s) => {
-                out.push(format!("{} ({})", r.id.display(), s.plan));
-                out.push(win("Session (5h)", s.session.utilization_pct, s.session.resets_at, now));
-                out.push(win("Weekly", s.weekly.utilization_pct, s.weekly.resets_at, now));
-                if let Some(w) = &s.sonnet {
-                    out.push(win("Sonnet (weekly)", w.utilization_pct, w.resets_at, now));
-                }
-                if let Some(e) = s.extra {
-                    out.push(format!("    Extra usage: {} ({}%)", e.fmt(), e.percent()));
-                }
-            }
-            VendorSnapshot::Openai(s) => {
-                out.push(format!("{} ({})", r.id.display(), s.plan));
-                out.push(win("Session (5h)", s.session.utilization_pct, s.session.resets_at, now));
-                out.push(win("Weekly", s.weekly.utilization_pct, s.weekly.resets_at, now));
-                if let Some(w) = &s.code_review {
-                    out.push(win("Code review", w.utilization_pct, w.resets_at, now));
-                }
-                if let Some(c) = &s.credits {
-                    out.push(format!("    Credits: {}", c.balance));
-                }
-            }
-            VendorSnapshot::Zai(s) => {
-                out.push(format!("{} ({})", r.id.display(), s.plan));
-                if let Some(w) = &s.session {
-                    out.push(win("Session (5h)", w.utilization_pct, w.resets_at, now));
-                }
-                if let Some(w) = &s.weekly {
-                    out.push(win("Weekly", w.utilization_pct, w.resets_at, now));
-                }
-                if let Some(w) = &s.mcp {
-                    out.push(win("MCP (monthly)", w.utilization_pct, w.resets_at, now));
-                }
-            }
-            VendorSnapshot::Openrouter(s) => {
-                out.push(s.label.clone());
-                out.push(format!("    Balance: {}", money(s.balance())));
-                out.push(format!(
-                    "    Spent: {} total · {} today",
-                    money(s.total_usage),
-                    money(s.usage_daily)
-                ));
-                if let Some(lim) = s.limit {
-                    out.push(format!("    Key limit: {}", money(lim)));
-                }
-            }
-            VendorSnapshot::Deepseek(s) => {
-                out.push(format!("{} balance", r.id.display()));
-                out.push(format!(
-                    "    {}{} ({})",
-                    currency_sym(&s.currency),
-                    trim(s.balance),
-                    if s.is_available { "available" } else { "unavailable" }
-                ));
-            }
-        },
-    }
-    out
+// ---------------------------------------------------------------------------
+// Popup view-model — only vendors with an identified key (Ok, or configured
+// but currently erroring). Login-needed / unconfigured vendors are hidden
+// here and surfaced in the settings window instead.
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct PopupModel {
+    pub vendors: Vec<VendorCard>,
 }
 
-fn win(label: &str, pct: i32, reset: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
-    format!("    {label}: {pct}% · resets {}", fmt_reset(reset, now))
+#[derive(Serialize)]
+pub struct VendorCard {
+    pub id: String,
+    pub name: String,
+    pub plan: Option<String>,
+    /// "ok" | "error"
+    pub status: String,
+    pub message: Option<String>,
+    pub bars: Vec<Bar>,
+    pub facts: Vec<Fact>,
+}
+
+#[derive(Serialize)]
+pub struct Bar {
+    pub label: String,
+    pub pct: i32,
+    pub reset: Option<String>,
+    /// "low" | "mid" | "high" | "critical"
+    pub level: String,
+}
+
+#[derive(Serialize)]
+pub struct Fact {
+    pub label: String,
+    pub value: String,
+}
+
+pub fn popup_model(
+    reports: &[VendorReport],
+    cfg: &Config,
+    primary: VendorId,
+    now: DateTime<Utc>,
+) -> PopupModel {
+    let mut ordered: Vec<&VendorReport> = reports.iter().collect();
+    ordered.sort_by_key(|r| (r.id != primary, VendorId::ALL.iter().position(|v| *v == r.id)));
+
+    let mut vendors = Vec::new();
+    for r in ordered {
+        match &r.state {
+            VendorState::Ok(snap) => vendors.push(ok_card(r.id, snap, now)),
+            // Show configured-but-erroring vendors so problems are visible.
+            VendorState::Error(msg) if cfg.is_configured(r.id) => vendors.push(VendorCard {
+                id: vendor_id_str(r.id),
+                name: r.id.display().to_string(),
+                plan: None,
+                status: "error".into(),
+                message: Some(msg.clone()),
+                bars: Vec::new(),
+                facts: Vec::new(),
+            }),
+            // NeedsLogin / unconfigured → omitted from the popup.
+            _ => {}
+        }
+    }
+    PopupModel { vendors }
+}
+
+fn ok_card(id: VendorId, snap: &VendorSnapshot, now: DateTime<Utc>) -> VendorCard {
+    let mut bars = Vec::new();
+    let mut facts = Vec::new();
+    let mut plan = None;
+
+    match snap {
+        VendorSnapshot::Anthropic(s) => {
+            plan = Some(s.plan.clone());
+            bars.push(bar("Session (5h)", &s.session, now));
+            bars.push(bar("Weekly", &s.weekly, now));
+            if let Some(w) = &s.sonnet {
+                bars.push(bar("Sonnet (weekly)", w, now));
+            }
+            if let Some(e) = s.extra {
+                facts.push(Fact {
+                    label: "Extra usage".into(),
+                    value: format!("{} ({}%)", e.fmt(), e.percent()),
+                });
+            }
+        }
+        VendorSnapshot::Openai(s) => {
+            plan = Some(s.plan.clone());
+            bars.push(bar("Session (5h)", &s.session, now));
+            bars.push(bar("Weekly", &s.weekly, now));
+            if let Some(w) = &s.code_review {
+                bars.push(bar("Code review", w, now));
+            }
+            if let Some(c) = &s.credits {
+                facts.push(Fact {
+                    label: "Credits".into(),
+                    value: c.balance.clone(),
+                });
+            }
+        }
+        VendorSnapshot::Zai(s) => {
+            plan = Some(s.plan.clone());
+            if let Some(w) = &s.session {
+                bars.push(bar("Session (5h)", w, now));
+            }
+            if let Some(w) = &s.weekly {
+                bars.push(bar("Weekly", w, now));
+            }
+            if let Some(w) = &s.mcp {
+                bars.push(bar("MCP (monthly)", w, now));
+            }
+        }
+        VendorSnapshot::Openrouter(s) => {
+            plan = Some(s.label.clone());
+            bars.push(Bar {
+                label: "Credits used".into(),
+                pct: s.consumed_pct(),
+                reset: None,
+                level: level_str(s.consumed_pct()).into(),
+            });
+            facts.push(Fact {
+                label: "Balance".into(),
+                value: money(s.balance()),
+            });
+            facts.push(Fact {
+                label: "Spent today".into(),
+                value: money(s.usage_daily),
+            });
+            if let Some(lim) = s.limit {
+                facts.push(Fact {
+                    label: "Key limit".into(),
+                    value: money(lim),
+                });
+            }
+        }
+        VendorSnapshot::Deepseek(s) => {
+            facts.push(Fact {
+                label: "Balance".into(),
+                value: format!("{}{}", currency_sym(&s.currency), trim(s.balance)),
+            });
+            facts.push(Fact {
+                label: "Status".into(),
+                value: if s.is_available { "available" } else { "unavailable" }.into(),
+            });
+        }
+    }
+
+    VendorCard {
+        id: vendor_id_str(id),
+        name: id.display().to_string(),
+        plan,
+        status: "ok".into(),
+        message: None,
+        bars,
+        facts,
+    }
+}
+
+fn bar(label: &str, w: &UsageWindow, now: DateTime<Utc>) -> Bar {
+    Bar {
+        label: label.into(),
+        pct: w.utilization_pct,
+        reset: w.resets_at.map(|_| fmt_reset(w.resets_at, now)),
+        level: level_str(w.utilization_pct).into(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Settings view-model — every supported vendor, configured or not.
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct SettingsModel {
+    pub poll_seconds: u64,
+    pub primary: String,
+    pub vendors: Vec<VendorSetting>,
+}
+
+#[derive(Serialize)]
+pub struct VendorSetting {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub configured: bool,
+    /// "oauth" (Anthropic/OpenAI) | "apikey" (Z.AI/OpenRouter/DeepSeek)
+    pub kind: String,
+    pub api_key_env: Option<String>,
+    pub api_key: Option<String>,
+    pub plan_tier: Option<String>,
+    /// Path hint for OAuth vendors / where the key is read from.
+    pub hint: Option<String>,
+    pub status: Option<String>,
+}
+
+pub fn settings_model(cfg: &Config, reports: &[VendorReport]) -> SettingsModel {
+    let primary = cfg.ui.primary.unwrap_or(VendorId::Anthropic);
+    let vendors = VendorId::ALL
+        .iter()
+        .map(|&id| vendor_setting(id, cfg, reports))
+        .collect();
+    SettingsModel {
+        poll_seconds: cfg.poll_seconds.unwrap_or(60).max(15),
+        primary: vendor_id_str(primary),
+        vendors,
+    }
+}
+
+fn vendor_setting(id: VendorId, cfg: &Config, reports: &[VendorReport]) -> VendorSetting {
+    let status = reports
+        .iter()
+        .find(|r| r.id == id)
+        .map(|r| state_label(&r.state));
+
+    let (kind, api_key_env, api_key, plan_tier, hint) = match id {
+        VendorId::Anthropic => (
+            "oauth",
+            None,
+            None,
+            None,
+            Some("Reads ~/.claude/.credentials.json — sign in with the `claude` CLI.".to_string()),
+        ),
+        VendorId::Openai => (
+            "oauth",
+            None,
+            None,
+            None,
+            Some("Reads ~/.codex/auth.json — sign in with `codex login`.".to_string()),
+        ),
+        VendorId::Zai => (
+            "apikey",
+            Some(cfg.zai.api_key_env.clone()),
+            cfg.zai.api_key.clone(),
+            cfg.zai.plan_tier.clone(),
+            None,
+        ),
+        VendorId::Openrouter => (
+            "apikey",
+            Some(cfg.openrouter.api_key_env.clone()),
+            cfg.openrouter.api_key.clone(),
+            None,
+            None,
+        ),
+        VendorId::Deepseek => (
+            "apikey",
+            Some(cfg.deepseek.api_key_env.clone()),
+            cfg.deepseek.api_key.clone(),
+            None,
+            None,
+        ),
+    };
+
+    VendorSetting {
+        id: vendor_id_str(id),
+        name: id.display().to_string(),
+        enabled: cfg.is_enabled(id),
+        configured: cfg.is_configured(id),
+        kind: kind.into(),
+        api_key_env,
+        api_key,
+        plan_tier,
+        hint,
+        status,
+    }
+}
+
+fn state_label(state: &VendorState) -> String {
+    match state {
+        VendorState::Ok(_) => "Connected".into(),
+        VendorState::NeedsLogin(m) => format!("Login needed — {m}"),
+        VendorState::Error(m) => format!("Error — {m}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers.
+// ---------------------------------------------------------------------------
+
+fn vendor_id_str(id: VendorId) -> String {
+    match id {
+        VendorId::Anthropic => "anthropic",
+        VendorId::Openai => "openai",
+        VendorId::Zai => "zai",
+        VendorId::Openrouter => "openrouter",
+        VendorId::Deepseek => "deepseek",
+    }
+    .to_string()
+}
+
+fn level_str(pct: i32) -> &'static str {
+    match severity_for(pct) {
+        Severity::Low => "low",
+        Severity::Mid => "mid",
+        Severity::High => "high",
+        Severity::Critical => "critical",
+    }
 }
 
 fn money(v: f64) -> String {
@@ -223,15 +437,29 @@ mod tests {
     }
 
     #[test]
-    fn primary_vendor_leads_tooltip() {
-        let reports = vec![
-            anthropic_report(10, 10),
-            VendorReport {
-                id: VendorId::Openai,
-                state: VendorState::NeedsLogin("x".into()),
-            },
-        ];
-        let r = render(&reports, VendorId::Openai, Utc::now());
-        assert!(r.tooltip.starts_with("gpt"));
+    fn popup_includes_ok_vendor_with_bars() {
+        let reports = vec![anthropic_report(62, 24)];
+        let m = popup_model(&reports, &Config::default(), VendorId::Anthropic, Utc::now());
+        assert_eq!(m.vendors.len(), 1);
+        assert_eq!(m.vendors[0].status, "ok");
+        assert_eq!(m.vendors[0].bars[0].pct, 62);
+        assert_eq!(m.vendors[0].bars[0].level, "mid");
+    }
+
+    #[test]
+    fn popup_hides_login_needed_vendor() {
+        let reports = vec![VendorReport {
+            id: VendorId::Openai,
+            state: VendorState::NeedsLogin("x".into()),
+        }];
+        let m = popup_model(&reports, &Config::default(), VendorId::Anthropic, Utc::now());
+        assert!(m.vendors.is_empty());
+    }
+
+    #[test]
+    fn settings_lists_every_vendor() {
+        let m = settings_model(&Config::default(), &[]);
+        assert_eq!(m.vendors.len(), VendorId::ALL.len());
+        assert_eq!(m.primary, "anthropic");
     }
 }

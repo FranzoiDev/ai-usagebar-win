@@ -6,31 +6,33 @@
 
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::vendors::VendorId;
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
+    // NOTE: `poll_seconds` must be serialized before the `[table]` fields —
+    // TOML requires bare values to precede tables at the same level.
+    /// Seconds between refreshes. Default 60.
+    pub poll_seconds: Option<u64>,
     pub ui: UiConfig,
     pub anthropic: AnthropicConfig,
     pub openai: OpenAiConfig,
     pub zai: ZaiConfig,
     pub openrouter: OpenRouterConfig,
     pub deepseek: DeepseekConfig,
-    /// Seconds between refreshes. Default 60.
-    pub poll_seconds: Option<u64>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct UiConfig {
     /// Which vendor leads the tray tooltip. Defaults to anthropic.
     pub primary: Option<VendorId>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AnthropicConfig {
     pub enabled: bool,
@@ -45,7 +47,7 @@ impl Default for AnthropicConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct OpenAiConfig {
     pub enabled: bool,
@@ -60,7 +62,7 @@ impl Default for OpenAiConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ZaiConfig {
     pub enabled: bool,
@@ -79,7 +81,7 @@ impl Default for ZaiConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct OpenRouterConfig {
     pub enabled: bool,
@@ -96,7 +98,7 @@ impl Default for OpenRouterConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct DeepseekConfig {
     pub enabled: bool,
@@ -146,8 +148,62 @@ impl Config {
             .collect()
     }
 
+    /// True when a usable credential/API key is present for this vendor —
+    /// drives whether it shows in the popup (configured) vs only in settings.
+    pub fn is_configured(&self, id: VendorId) -> bool {
+        match id {
+            VendorId::Anthropic => anthropic_creds_path(&self.anthropic)
+                .map(|p| p.is_file())
+                .unwrap_or(false),
+            VendorId::Openai => openai_auth_path(&self.openai)
+                .map(|p| p.is_file())
+                .unwrap_or(false),
+            VendorId::Zai => {
+                resolve_api_key(&self.zai.api_key_env, self.zai.api_key.as_deref()).is_some()
+            }
+            VendorId::Openrouter => resolve_api_key(
+                &self.openrouter.api_key_env,
+                self.openrouter.api_key.as_deref(),
+            )
+            .is_some(),
+            VendorId::Deepseek => {
+                resolve_api_key(&self.deepseek.api_key_env, self.deepseek.api_key.as_deref())
+                    .is_some()
+            }
+        }
+    }
+
     pub fn poll_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.poll_seconds.unwrap_or(60).max(15))
+    }
+
+    /// Normalize a config built from the settings form: drop blank inline keys
+    /// (so we never persist `api_key = ""`) and floor the poll interval.
+    pub fn sanitized(mut self) -> Self {
+        fn blank_to_none(v: &mut Option<String>) {
+            if v.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                *v = None;
+            }
+        }
+        blank_to_none(&mut self.zai.api_key);
+        blank_to_none(&mut self.openrouter.api_key);
+        blank_to_none(&mut self.deepseek.api_key);
+        blank_to_none(&mut self.zai.plan_tier);
+        if let Some(p) = self.poll_seconds {
+            self.poll_seconds = Some(p.max(15));
+        }
+        self
+    }
+
+    /// Persist to `%APPDATA%\ai-usagebar\config.toml`, creating parent dirs.
+    pub fn save(&self) -> anyhow::Result<()> {
+        let path = default_path()
+            .ok_or_else(|| anyhow::anyhow!("could not resolve config directory"))?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, toml::to_string_pretty(self)?)?;
+        Ok(())
     }
 }
 
@@ -225,6 +281,48 @@ mod tests {
     fn poll_interval_floor_is_15() {
         let c: Config = toml::from_str("poll_seconds = 1").unwrap();
         assert_eq!(c.poll_interval().as_secs(), 15);
+    }
+
+    #[test]
+    fn serializes_to_toml_and_round_trips() {
+        // Guards the field ordering: TOML requires bare values (poll_seconds)
+        // before any [table]. A bad order makes to_string_pretty error.
+        let c = Config {
+            poll_seconds: Some(45),
+            ui: UiConfig {
+                primary: Some(VendorId::Openai),
+            },
+            zai: ZaiConfig {
+                api_key: Some("sk-test".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let toml_str = toml::to_string_pretty(&c).expect("serialize");
+        let back: Config = toml::from_str(&toml_str).expect("parse back");
+        assert_eq!(back.poll_seconds, Some(45));
+        assert_eq!(back.ui.primary, Some(VendorId::Openai));
+        assert_eq!(back.zai.api_key.as_deref(), Some("sk-test"));
+    }
+
+    #[test]
+    fn sanitized_drops_blank_keys_and_floors_poll() {
+        let c = Config {
+            poll_seconds: Some(3),
+            zai: ZaiConfig {
+                api_key: Some("   ".into()),
+                ..Default::default()
+            },
+            openrouter: OpenRouterConfig {
+                api_key: Some("sk-real".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .sanitized();
+        assert_eq!(c.poll_seconds, Some(15));
+        assert_eq!(c.zai.api_key, None);
+        assert_eq!(c.openrouter.api_key.as_deref(), Some("sk-real"));
     }
 
     #[test]

@@ -3,30 +3,42 @@
 Windows system-tray app that shows AI plan usage for Anthropic (Claude),
 OpenAI (Codex), Z.AI (GLM), OpenRouter, and DeepSeek.
 
-Single `.exe`, no installer, no runtime. Written in Rust with
-[`tray-icon`](https://crates.io/crates/tray-icon) and
-[`tao`](https://crates.io/crates/tao) over the Win32 `Shell_NotifyIcon` API.
-The data layer is a Windows port of the Linux
+Single `.exe`, no installer. Written in Rust with
+[`tray-icon`](https://crates.io/crates/tray-icon),
+[`tao`](https://crates.io/crates/tao) and
+[`wry`](https://crates.io/crates/wry) over the Win32 `Shell_NotifyIcon` API.
+The UI is rendered in WebView2 (bundled with Windows 10/11). The data layer is
+a Windows port of the Linux
 [`ai-usagebar`](https://github.com/akitaonrails/ai-usagebar) Waybar widget.
 
 The app is read-only. It reads the access tokens the `claude` / `codex` CLIs
 already wrote to disk and never refreshes or rewrites them, so it cannot log
 you out. An expired token shows a "re-login" hint instead of being refreshed.
 
-## Screenshots
+## UI
 
-Hover (tooltip):
-
-<!-- screenshots/hover.png -->
-![hover](screenshots/hover.png)
-
-Right-click (menu):
-
-<!-- screenshots/menu.png -->
-![menu](screenshots/menu.png)
+- **Hover** the tray icon for a one-line-per-provider tooltip.
+- **Click** the tray icon for a popup with a card and progress bars per
+  provider. Only providers with an identified key/credential are shown.
+- **Settings** (button in the popup) opens a regular OS window to enable
+  providers and manage API keys — including providers that aren't configured
+  yet. Changes are written to `config.toml` and applied without a restart.
+- **Quit** (button in the popup) exits the whole process.
 
 The icon color tracks worst-case usage: green <50%, yellow >=50%, orange >=75%,
 red >=90%.
+
+## Screenshots
+
+Popup (progress bars):
+
+<!-- screenshots/popup.png -->
+![popup](screenshots/popup.png)
+
+Settings window:
+
+<!-- screenshots/settings.png -->
+![settings](screenshots/settings.png)
 
 ## Install
 
@@ -62,10 +74,11 @@ setx OPENROUTER_API_KEY "your-key"
 Optional. Copy `config.example.toml` to `%APPDATA%\ai-usagebar\config.toml`.
 
 - `poll_seconds`: refresh interval, default 60, minimum 15.
-- `[ui] primary`: provider shown first in the tooltip.
+- `[ui] primary`: provider shown first in the tooltip/popup.
 - per-provider `enabled` and inline `api_key`.
 
-Same format as the Linux `ai-usagebar`, so an existing config works.
+Same format as the Linux `ai-usagebar`, so an existing config works. The
+Settings window edits this same file, so hand-edits and the UI stay in sync.
 
 ## Build
 
@@ -87,12 +100,14 @@ log output, and `cargo test` to run the suite.
 | `src/creds.rs` | read-only Claude/Codex credential readers (no refresh) |
 | `src/config.rs` | config loading, API-key and path resolution |
 | `src/vendors/` | one module per provider: endpoint, types, parse |
-| `src/render.rs` | snapshot -> tooltip, menu lines, icon severity |
+| `src/render.rs` | snapshot -> tooltip + popup/settings view-models, icon severity |
+| `src/ui.rs` | embedded HTML/CSS/JS for the popup and settings WebViews |
 | `src/tray.rs` | RGBA tray icon generated in code |
-| `src/main.rs` | tao event loop and background poll thread |
+| `src/main.rs` | tao event loop, WebView windows, IPC, background poll thread |
 
 A background thread polls each provider on an interval and sends results to the
-UI thread, which owns the tray icon and repaints.
+UI thread, which owns the tray icon and the WebView windows. WebView pages talk
+back over `window.ipc.postMessage` (refresh / open settings / save / quit).
 
 ## Endpoints
 
