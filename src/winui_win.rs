@@ -10,7 +10,12 @@
 
 // This module is a thin layer over raw Win32: several ABI constants are kept for
 // completeness, and the control factories naturally take many geometry args.
-#![allow(dead_code, clippy::too_many_arguments, clippy::missing_safety_doc)]
+#![allow(
+    dead_code,
+    unsafe_op_in_unsafe_fn,
+    clippy::too_many_arguments,
+    clippy::missing_safety_doc
+)]
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -22,18 +27,18 @@ use tao::event_loop::EventLoopProxy;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateFontW, CreateSolidBrush, DrawTextW, FillRect, GetStockObject, RoundRect, SelectObject,
-    SetBkColor, SetBkMode, SetTextColor, HBRUSH, HDC, HFONT, HGDIOBJ,
+    CreateFontW, CreateSolidBrush, FillRect, SetBkColor, SetBkMode, SetTextColor, HBRUSH, HDC, HFONT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{
-    InitCommonControlsEx, SetWindowTheme, DRAWITEMSTRUCT, INITCOMMONCONTROLSEX,
+    InitCommonControlsEx, SetScrollInfo, SetWindowTheme, INITCOMMONCONTROLSEX,
 };
 use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetSystemMetrics,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetScrollInfo, GetSystemMetrics,
     GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, LoadCursorW, RegisterClassExW,
-    SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, WNDCLASSEXW,
+    ScrollWindowEx, SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    SCROLLINFO, WNDCLASSEXW,
 };
 
 use crate::config::Config;
@@ -161,6 +166,24 @@ const DWMWCP_ROUND: i32 = 2;
 const ICC_PROGRESS_CLASS: u32 = 0x20;
 const ICC_STANDARD_CLASSES: u32 = 0x4000;
 
+const WM_VSCROLL: u32 = 0x0115;
+const WM_MOUSEWHEEL: u32 = 0x020A;
+const SB_VERT: i32 = 1;
+const SB_LINEUP: i32 = 0;
+const SB_LINEDOWN: i32 = 1;
+const SB_PAGEUP: i32 = 2;
+const SB_PAGEDOWN: i32 = 3;
+const SB_THUMBPOSITION: i32 = 4;
+const SB_THUMBTRACK: i32 = 5;
+const SIF_RANGE: u32 = 0x0001;
+const SIF_PAGE: u32 = 0x0002;
+const SIF_POS: u32 = 0x0004;
+const SIF_TRACKPOS: u32 = 0x0010;
+const SIF_ALL: u32 = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_TRACKPOS;
+const SW_SCROLLCHILDREN: u32 = 0x0001;
+const SW_INVALIDATE: u32 = 0x0002;
+const SW_ERASE: u32 = 0x0004;
+
 const FW_NORMAL: i32 = 400;
 const FW_SEMIBOLD: i32 = 600;
 const DEFAULT_CHARSET: u32 = 1;
@@ -284,7 +307,7 @@ pub fn init(proxy: EventLoopProxy<UserEvent>, refresh: Sender<()>) {
             0,
             wide(SETTINGS_CLASS).as_ptr(),
             wide("AI Usage — Settings").as_ptr(),
-            WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
+            WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN | WS_VSCROLL,
             i32::MIN, // CW_USEDEFAULT
             i32::MIN,
             px(scale, 580),
@@ -472,19 +495,14 @@ unsafe fn build_popup_controls(parent: HWND, res: Res, cards: &[VendorCard]) -> 
         }
     }
 
-    // Footer buttons.
+    // Footer: three standard native buttons.
     y += px(res.scale, 8);
-    let btn_h = px(res.scale, 34);
-    let gap = px(res.scale, 8);
-    let refresh_w = px(res.scale, 42);
-    let rest = inner - refresh_w - gap * 2;
-    let half = rest / 2;
-    let mut x = pad;
-    kids.push(mk_button(parent, res, "⟳", x, y, refresh_w, btn_h, ID_REFRESH));
-    x += refresh_w + gap;
-    kids.push(mk_button(parent, res, "⚙  Settings", x, y, half, btn_h, ID_SETTINGS));
-    x += half + gap;
-    kids.push(mk_button(parent, res, "⏻  Quit", x, y, rest - half, btn_h, ID_QUIT));
+    let btn_h = px(res.scale, 30);
+    let gap = px(res.scale, 6);
+    let bw = (inner - gap * 2) / 3;
+    kids.push(mk_button(parent, res, "Refresh", pad, y, bw, btn_h, ID_REFRESH));
+    kids.push(mk_button(parent, res, "Settings", pad + bw + gap, y, bw, btn_h, ID_SETTINGS));
+    kids.push(mk_button(parent, res, "Quit", pad + (bw + gap) * 2, y, inner - (bw + gap) * 2, btn_h, ID_QUIT));
     y += btn_h + pad;
 
     (kids, w, y)
@@ -536,12 +554,26 @@ fn show_settings() {
             DestroyWindow(h);
         }
         let model = render::settings_model(&cfg, &reports);
-        let (children, fields) = build_settings_controls(settings, res, &model);
+        let (children, fields, content_h) = build_settings_controls(settings, res, &model);
 
         ui_do(|ui| {
             ui.settings_children = children;
             ui.fields = Some(fields);
         });
+
+        // Size the vertical scrollbar to the built content.
+        let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        GetClientRect(settings, &mut rc);
+        let si = SCROLLINFO {
+            cbSize: core::mem::size_of::<SCROLLINFO>() as u32,
+            fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
+            nMin: 0,
+            nMax: content_h,
+            nPage: (rc.bottom - rc.top).max(0) as u32,
+            nPos: 0,
+            nTrackPos: 0,
+        };
+        SetScrollInfo(settings, SB_VERT, &si, 1);
 
         ShowWindow(settings, SW_SHOW);
         SetForegroundWindow(settings);
@@ -552,7 +584,7 @@ unsafe fn build_settings_controls(
     parent: HWND,
     res: Res,
     model: &render::SettingsModel,
-) -> (Vec<HWND>, SettingsFields) {
+) -> (Vec<HWND>, SettingsFields, i32) {
     let mut kids = Vec::new();
     let pad = px(res.scale, 18);
     let w = px(res.scale, 580) - pad * 2;
@@ -636,7 +668,7 @@ unsafe fn build_settings_controls(
     kids.push(mk_button(parent, res, "Close", pad + w - bw * 2 - gap, y, bw, btn_h, ID_CLOSE));
     kids.push(mk_button(parent, res, "Save", pad + w - bw, y, bw, btn_h, ID_SAVE));
 
-    (kids, SettingsFields { poll, primary, vendors })
+    (kids, SettingsFields { poll, primary, vendors }, y + px(res.scale, 8))
 }
 
 fn save_settings() {
@@ -720,8 +752,10 @@ unsafe fn mk_progress(parent: HWND, res: Res, x: i32, y: i32, w: i32, h: i32, pc
 }
 
 unsafe fn mk_button(parent: HWND, res: Res, text: &str, x: i32, y: i32, w: i32, h: i32, id: usize) -> HWND {
-    let hw = CreateWindowExW(0, wide("BUTTON").as_ptr(), wide(text).as_ptr(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, x, y, w, h, parent, id as HWND, res.hinst, core::ptr::null());
+    // Standard native push button (no owner-draw) — themed by the OS.
+    let hw = CreateWindowExW(0, wide("BUTTON").as_ptr(), wide(text).as_ptr(), WS_CHILD | WS_VISIBLE | WS_TABSTOP, x, y, w, h, parent, id as HWND, res.hinst, core::ptr::null());
     SendMessageW(hw, WM_SETFONT, res.font as usize, 1);
+    SetWindowTheme(hw, wide("Explorer").as_ptr(), core::ptr::null());
     hw
 }
 
@@ -759,10 +793,6 @@ unsafe extern "system" fn popup_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
             1
         }
         WM_CTLCOLORSTATIC => ctlcolor_static(wp as HDC, lp as HWND),
-        WM_DRAWITEM => {
-            draw_button(&*(lp as *const DRAWITEMSTRUCT));
-            1
-        }
         WM_COMMAND => {
             handle_command(wp & 0xFFFF);
             0
@@ -799,9 +829,15 @@ unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
             SetBkMode(hdc, OPAQUE);
             ui_do(|ui| ui.card_brush as LRESULT).unwrap_or(0)
         }
-        WM_DRAWITEM => {
-            draw_button(&*(lp as *const DRAWITEMSTRUCT));
-            1
+        WM_VSCROLL => {
+            on_vscroll(hwnd, wp);
+            0
+        }
+        WM_MOUSEWHEEL => {
+            let delta = ((wp >> 16) & 0xFFFF) as i16 as i32;
+            let line = ui_do(|ui| px(ui.res.scale, 28)).unwrap_or(28);
+            scroll_by(hwnd, -delta / 120 * line);
+            0
         }
         WM_COMMAND => {
             let id = wp & 0xFFFF;
@@ -858,42 +894,72 @@ unsafe fn ctlcolor_static(hdc: HDC, ctl: HWND) -> LRESULT {
     ui_do(|ui| ui.bg_brush as LRESULT).unwrap_or(0)
 }
 
-unsafe fn draw_button(dis: &DRAWITEMSTRUCT) {
-    let hdc = dis.hDC;
-    let r = dis.rcItem;
-    let pressed = dis.itemState & ODS_SELECTED != 0;
-    let (mut fill, text_color) = match dis.CtlID as usize {
-        ID_SETTINGS | ID_SAVE => (ACCENT, rgb(0xff, 0xff, 0xff)),
-        ID_QUIT => (CARD, QUIT_RED),
-        _ => (CARD, TEXT),
+// ---------------------------------------------------------------------------
+// Scrolling (settings window).
+// ---------------------------------------------------------------------------
+
+unsafe fn on_vscroll(hwnd: HWND, wp: WPARAM) {
+    let mut si = SCROLLINFO {
+        cbSize: core::mem::size_of::<SCROLLINFO>() as u32,
+        fMask: SIF_ALL,
+        nMin: 0,
+        nMax: 0,
+        nPage: 0,
+        nPos: 0,
+        nTrackPos: 0,
     };
-    if pressed {
-        fill = darken(fill);
+    GetScrollInfo(hwnd, SB_VERT, &mut si);
+    let old = si.nPos;
+    let line = ui_do(|ui| px(ui.res.scale, 28)).unwrap_or(28);
+    let code = (wp & 0xFFFF) as i32;
+    let mut pos = si.nPos;
+    if code == SB_LINEUP {
+        pos -= line;
+    } else if code == SB_LINEDOWN {
+        pos += line;
+    } else if code == SB_PAGEUP {
+        pos -= si.nPage as i32;
+    } else if code == SB_PAGEDOWN {
+        pos += si.nPage as i32;
+    } else if code == SB_THUMBTRACK || code == SB_THUMBPOSITION {
+        pos = si.nTrackPos;
     }
-
-    let brush = CreateSolidBrush(fill);
-    let old_brush = SelectObject(hdc, brush as HGDIOBJ);
-    let old_pen = SelectObject(hdc, GetStockObject(NULL_PEN));
-    let radius = 14;
-    RoundRect(hdc, r.left, r.top, r.right, r.bottom, radius, radius);
-    SelectObject(hdc, old_brush);
-    SelectObject(hdc, old_pen);
-    delete_object(brush as HGDIOBJ);
-
-    let label = get_text(dis.hwndItem);
-    if let Some(font) = ui_do(|ui| ui.res.font) {
-        let old_font = SelectObject(hdc, font as HGDIOBJ);
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, text_color);
-        let mut rr = r;
-        DrawTextW(hdc, wide(&label).as_ptr(), -1, &mut rr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        SelectObject(hdc, old_font);
-    }
+    apply_scroll(hwnd, &mut si, old, pos);
 }
 
-unsafe fn delete_object(o: HGDIOBJ) {
-    use windows_sys::Win32::Graphics::Gdi::DeleteObject;
-    DeleteObject(o);
+unsafe fn scroll_by(hwnd: HWND, dy: i32) {
+    let mut si = SCROLLINFO {
+        cbSize: core::mem::size_of::<SCROLLINFO>() as u32,
+        fMask: SIF_ALL,
+        nMin: 0,
+        nMax: 0,
+        nPage: 0,
+        nPos: 0,
+        nTrackPos: 0,
+    };
+    GetScrollInfo(hwnd, SB_VERT, &mut si);
+    let old = si.nPos;
+    apply_scroll(hwnd, &mut si, old, si.nPos + dy);
+}
+
+unsafe fn apply_scroll(hwnd: HWND, si: &mut SCROLLINFO, old: i32, mut pos: i32) {
+    let max = (si.nMax - si.nPage as i32 + 1).max(0);
+    pos = pos.clamp(0, max);
+    if pos != old {
+        ScrollWindowEx(
+            hwnd,
+            0,
+            old - pos,
+            core::ptr::null(),
+            core::ptr::null(),
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+            SW_SCROLLCHILDREN | SW_INVALIDATE | SW_ERASE,
+        );
+        si.fMask = SIF_POS;
+        si.nPos = pos;
+        SetScrollInfo(hwnd, SB_VERT, si, 1);
+    }
 }
 
 // ---------------------------------------------------------------------------
