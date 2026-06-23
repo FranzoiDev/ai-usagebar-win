@@ -1,9 +1,8 @@
 using System;
-using Microsoft.UI;
-using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Data;
-using Microsoft.UI.Xaml.Media;
-using Windows.UI;
+using System.Globalization;
+using System.Windows;
+using System.Windows.Data;
+using System.Windows.Media;
 
 namespace AiUsageBar;
 
@@ -16,7 +15,7 @@ public sealed class LevelToBrushConverter : IValueConverter
     private static readonly SolidColorBrush High = new(Color.FromArgb(0xFF, 0xFF, 0x98, 0x00));
     private static readonly SolidColorBrush Critical = new(Color.FromArgb(0xFF, 0xF4, 0x43, 0x36));
 
-    public object Convert(object value, Type targetType, object parameter, string language) => value as string switch
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture) => value as string switch
     {
         "mid" => Mid,
         "high" => High,
@@ -24,20 +23,20 @@ public sealed class LevelToBrushConverter : IValueConverter
         _ => Low,
     };
 
-    public object ConvertBack(object value, Type targetType, object parameter, string language)
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         => throw new NotSupportedException();
 }
 
 /// <summary>bool → Visibility. Pass "invert" as the parameter to flip the sense.</summary>
 public sealed class BoolToVisibilityConverter : IValueConverter
 {
-    public object Convert(object value, Type targetType, object parameter, string language)
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
         var b = value is bool v && v;
         if (parameter as string == "invert") b = !b;
         return b ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    public object ConvertBack(object value, Type targetType, object parameter, string language)
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         => throw new NotSupportedException();
 }

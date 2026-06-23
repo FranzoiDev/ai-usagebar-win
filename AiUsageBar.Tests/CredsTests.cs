@@ -67,7 +67,7 @@ public class CredsTests : IDisposable
             ["exp"] = 2_000_000_000,
             ["https://api.openai.com/auth"] = new Dictionary<string, object> { ["chatgpt_plan_type"] = "plus" },
         });
-        var f = Tmp($$"""{"tokens":{"access_token":"AT","refresh_token":"RT","id_token":"{{id}}","account_id":"acc"}}""");
+        var f = Tmp($$$"""{"tokens":{"access_token":"AT","refresh_token":"RT","id_token":"{{{id}}}","account_id":"acc"}}""");
         var r = Creds.ReadOpenAi(f, 1_000_000_000);
         Assert.Equal(CredKind.Valid, r.Kind);
         Assert.Equal("AT", r.Value!.AccessToken);
@@ -79,7 +79,7 @@ public class CredsTests : IDisposable
     public void OpenAi_Expired()
     {
         var id = Jwt(new Dictionary<string, object> { ["exp"] = 1000 });
-        var f = Tmp($$"""{"tokens":{"access_token":"AT","refresh_token":"RT","id_token":"{{id}}"}}""");
+        var f = Tmp($$$"""{"tokens":{"access_token":"AT","refresh_token":"RT","id_token":"{{{id}}}"}}""");
         Assert.Equal(CredKind.Expired, Creds.ReadOpenAi(f, 1_000_000_000).Kind);
     }
 

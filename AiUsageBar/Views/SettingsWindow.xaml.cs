@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.Windows;
 using AiUsageBar.Models;
 using AiUsageBar.Services;
-using Microsoft.UI.Windowing;
-using Microsoft.UI.Xaml;
-using Windows.Graphics;
+using Wpf.Ui.Controls;
 
 namespace AiUsageBar.Views;
 
@@ -12,11 +12,10 @@ namespace AiUsageBar.Views;
 /// or not). Editable fields are bound two-way to the <see cref="SettingsModel"/>;
 /// Save reconstructs a <see cref="Config"/> from it, persists, and pings the
 /// poller. Closing hides the window so it can be reopened cheaply.</summary>
-public sealed partial class SettingsWindow : Window
+public partial class SettingsWindow : FluentWindow
 {
     public event Action? Saved;
 
-    private readonly AppWindow _appWindow;
     private IReadOnlyList<VendorReport> _reports = Array.Empty<VendorReport>();
     private SettingsModel _model = new();
 
@@ -24,18 +23,8 @@ public sealed partial class SettingsWindow : Window
     {
         InitializeComponent();
 
-        _appWindow = AppWindow;
-        _appWindow.Title = "AI Usage — Settings";
-        _appWindow.Resize(new SizeInt32(580, 780));
-        if (_appWindow.Presenter is OverlappedPresenter presenter)
-            presenter.IsMaximizable = false;
-
         // The X button hides rather than destroys, so the window can reopen.
-        _appWindow.Closing += (_, e) =>
-        {
-            e.Cancel = true;
-            _appWindow.Hide();
-        };
+        Closing += OnClosing;
 
         foreach (var id in VendorIdExtensions.All)
             PrimaryBox.Items.Add(id.Display());
@@ -45,8 +34,14 @@ public sealed partial class SettingsWindow : Window
     {
         _reports = reports;
         Populate(cfg);
-        _appWindow.Show();
+        Show();
         Activate();
+    }
+
+    private void OnClosing(object? sender, CancelEventArgs e)
+    {
+        e.Cancel = true;
+        Hide();
     }
 
     private void Populate(Config cfg)
@@ -54,6 +49,7 @@ public sealed partial class SettingsWindow : Window
         _model = Renderer.SettingsModel(cfg, _reports);
         PollBox.Value = _model.PollSeconds;
         PrimaryBox.SelectedIndex = Array.IndexOf(VendorIdExtensions.All, VendorIdExtensions.FromSlug(_model.Primary));
+        StartupBox.IsChecked = StartupService.IsEnabled();
         VendorsList.ItemsSource = _model.Vendors;
     }
 
@@ -61,7 +57,7 @@ public sealed partial class SettingsWindow : Window
     {
         var cfg = new Config
         {
-            PollSeconds = double.IsNaN(PollBox.Value) ? 60 : (long)PollBox.Value,
+            PollSeconds = PollBox.Value is double d ? (long)d : 60,
         };
 
         var idx = PrimaryBox.SelectedIndex < 0 ? 0 : PrimaryBox.SelectedIndex;
@@ -106,10 +102,13 @@ public sealed partial class SettingsWindow : Window
             // Best-effort: a failed save shouldn't crash the app.
         }
 
+        // "Start with Windows" lives in the registry, not the TOML config.
+        StartupService.SetEnabled(StartupBox.IsChecked == true);
+
         Saved?.Invoke();
         // Rebuild so "configured" badges reflect the just-saved keys.
         Populate(sane);
     }
 
-    private void OnClose(object sender, RoutedEventArgs e) => _appWindow.Hide();
+    private void OnClose(object sender, RoutedEventArgs e) => Hide();
 }

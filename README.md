@@ -3,18 +3,19 @@
 Windows system-tray app that shows AI plan usage for Anthropic (Claude),
 OpenAI (Codex), Z.AI (GLM), OpenRouter, and DeepSeek.
 
-Built with **C# and WinUI 3** (Windows App SDK) on .NET 8. The tray icon uses
+Built with **C# and WPF** on .NET 8, styled with
+[`WPF-UI`](https://github.com/lepoco/wpfui) for a Fluent look (Mica backdrop,
+dark theme, modern controls). The tray icon uses
 [`H.NotifyIcon`](https://github.com/HavenDV/H.NotifyIcon); config is TOML via
 [`Tomlyn`](https://github.com/xoofx/Tomlyn) and stays compatible with the Linux
 [`ai-usagebar`](https://github.com/akitaonrails/ai-usagebar) Waybar widget. The
 popup and settings windows are native XAML.
 
-> **History:** this started as a Rust + raw-Win32 app. Maintaining the
-> hand-rolled Win32 UI in Rust turned out to be too much work, so I gave up on
-> that stack and migrated the project to a more modern, productive one — C# +
-> WinUI 3. The data layer (vendor endpoints, credential parsing, severity model)
-> is a faithful port of the original Rust code; see the git history for the
-> Rust version.
+> **History:** this started as a Rust + raw-Win32 app, was rewritten in
+> C#/WinUI 3, then moved to C#/WPF. WPF drops the dependency on the Windows App
+> SDK runtime, so GitHub Actions can build a single self-contained `.exe`. The
+> data layer (vendor endpoints, credential parsing, severity model) is a
+> faithful port across all three — see the git history for the earlier versions.
 
 The app is read-only. It reads the access tokens the `claude` / `codex` CLIs
 already wrote to disk and never refreshes or rewrites them, so it cannot log you
@@ -25,9 +26,10 @@ out. An expired token shows a "re-login" hint instead of being refreshed.
 - **Hover** the tray icon for a one-line-per-provider tooltip.
 - **Click** the tray icon for a popup with a card and progress bars per
   provider. Only providers with an identified key/credential are shown.
-- **Settings** (button in the popup) opens a window to enable providers and
-  manage API keys — including providers that aren't configured yet. Changes are
-  written to `config.toml` and applied without a restart.
+- **Settings** (button in the popup) opens a window to enable providers, manage
+  API keys, set the refresh interval, choose the primary provider, and toggle
+  **Start with Windows**. Changes are written to `config.toml` (the startup
+  toggle goes to the registry) and applied without a restart.
 - **Quit** (button in the popup) exits the whole process.
 
 The icon color tracks worst-case usage: green <50%, yellow >=50%, orange >=75%,
@@ -63,16 +65,17 @@ Optional. Copy `config.example.toml` to `%APPDATA%\ai-usagebar\config.toml`.
 
 Same format as the Linux `ai-usagebar`, so an existing config works. The
 Settings window edits this same file, so hand-edits and the UI stay in sync.
+"Start with Windows" is the one setting kept outside the TOML — it lives in the
+per-user `HKCU\...\Run` registry key.
 
 ## Build
 
 Requires:
 
 - **.NET 8 SDK**
-- **Windows 10 2004 (19041) or later** — WinUI 3 is Windows-only.
-- **Visual Studio 2022** with the *.NET Desktop Development* and *Windows App
-  SDK / WinUI* components (or the `Microsoft.WindowsAppSDK` NuGet alone for CLI
-  builds).
+- **Windows 10 2004 (19041) or later** — WPF is Windows-only.
+- Optional: **Visual Studio 2022** with the *.NET Desktop Development* workload.
+  The CLI builds need only the .NET 8 SDK; no Windows App SDK / WinUI components.
 
 ```powershell
 # from the repo root
@@ -89,20 +92,24 @@ press F5.
 
 ## Deploy
 
-WinUI 3 cannot ship as a single static `.exe` like the old Rust build — it
-depends on the Windows App SDK runtime. This project is configured **unpackaged
-and self-contained** (`WindowsPackageType=None`, `WindowsAppSDKSelfContained=true`),
-so the published output is a *folder* that runs without any separate runtime
-install:
+Unlike the old WinUI build, WPF needs no separate Windows App SDK runtime, so it
+publishes to a **single self-contained `.exe`** that runs on a clean machine.
+The self-contained / single-file / RID flags are passed at *publish* time only
+(setting them in the `.csproj` would force a RID on every `dotnet build`/`test`
+and break them):
 
 ```powershell
-dotnet publish AiUsageBar/AiUsageBar.csproj -c Release -p:Platform=x64 -r win-x64 --self-contained
-# -> AiUsageBar/bin/x64/Release/net8.0-windows10.0.19041.0/win-x64/publish/
-# run ai-usagebar-win.exe from that folder
+dotnet publish AiUsageBar/AiUsageBar.csproj -c Release -p:Platform=x64 `
+  -r win-x64 --self-contained true -p:PublishSingleFile=true
+# -> AiUsageBar/bin/x64/Release/net8.0-windows10.0.19041.0/win-x64/publish/ai-usagebar-win.exe
 ```
 
-To start it with Windows, put a shortcut to `ai-usagebar-win.exe` in
-`shell:startup` (`Win+R` -> `shell:startup`).
+Pushing a version tag (e.g. `git tag v0.3.0 && git push origin v0.3.0`) runs the
+`release` GitHub Actions workflow, which publishes the same build and attaches
+the `.exe` to a GitHub Release.
+
+To start it with Windows, use the **Start with Windows** toggle in Settings (or
+put a shortcut to `ai-usagebar-win.exe` in `shell:startup`).
 
 ## Layout
 
@@ -118,9 +125,10 @@ To start it with Windows, put a shortcut to `ai-usagebar-win.exe` in
 | `Services/Renderer.cs` | reports -> tooltip + popup/settings view-models |
 | `Services/TrayIconFactory.cs` | severity-tinted tray icon drawn in code |
 | `Services/TrayService.cs` | H.NotifyIcon wrapper |
+| `Services/StartupService.cs` | "Start with Windows" via the HKCU Run key |
 | `Services/Poller.cs` | background polling loop with on-demand refresh |
 | `Views/PopupWindow.xaml` | frameless popup anchored near the tray |
-| `Views/SettingsWindow.xaml` | provider enable + API-key form |
+| `Views/SettingsWindow.xaml` | provider enable + API-key form (Fluent window) |
 | `App.xaml.cs` | tray-first app wiring (no main window) |
 
 ## Endpoints

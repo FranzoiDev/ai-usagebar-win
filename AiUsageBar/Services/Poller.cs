@@ -1,25 +1,25 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Windows.Threading;
 using AiUsageBar.Models;
 using AiUsageBar.Services.Vendors;
-using Microsoft.UI.Dispatching;
 
 namespace AiUsageBar.Services;
 
 /// <summary>Background polling loop. Reloads config each cycle so settings
 /// changes (and the resulting refresh ping) take effect without a restart.
-/// Results are marshaled back to the UI thread via the dispatcher queue.</summary>
+/// Results are marshaled back to the UI thread via the dispatcher.</summary>
 public sealed class Poller : IDisposable
 {
-    private readonly DispatcherQueue _ui;
+    private readonly Dispatcher _ui;
     private readonly SemaphoreSlim _wake = new(0, 1);
     private readonly CancellationTokenSource _cts = new();
 
     /// <summary>Raised on the UI thread after each poll completes.</summary>
     public event Action<Config, IReadOnlyList<VendorReport>>? Updated;
 
-    public Poller(DispatcherQueue uiThread) => _ui = uiThread;
+    public Poller(Dispatcher uiThread) => _ui = uiThread;
 
     public void Start() => _ = LoopAsync(_cts.Token);
 
@@ -37,7 +37,7 @@ public sealed class Poller : IDisposable
             var cfg = Config.Load();
             var reports = await VendorClient.FetchAllAsync(cfg, DateTimeOffset.UtcNow).ConfigureAwait(false);
 
-            _ui.TryEnqueue(() => Updated?.Invoke(cfg, reports));
+            _ui.BeginInvoke(() => Updated?.Invoke(cfg, reports));
 
             try
             {

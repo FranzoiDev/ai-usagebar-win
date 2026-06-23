@@ -1,24 +1,22 @@
 using System;
 using System.Collections.Generic;
+using System.Windows;
 using AiUsageBar.Models;
 using AiUsageBar.Services;
 using AiUsageBar.Views;
-using Microsoft.UI.Dispatching;
-using Microsoft.UI.Xaml;
 
 namespace AiUsageBar;
 
 /// <summary>
-/// Tray-first WinUI 3 app: there is no main window. <see cref="OnLaunched"/>
-/// installs the notification-area icon and starts the background poller; the
-/// popup and settings windows are created lazily on first use.
+/// Tray-first WPF app: there is no main window. <see cref="OnStartup"/> installs
+/// the notification-area icon and starts the background poller; the popup and
+/// settings windows are created lazily on first use.
 ///
-/// A background thread polls every vendor on an interval and marshals results
-/// to the UI thread, which owns the tray icon and the windows.
+/// A background thread polls every vendor on an interval and marshals results to
+/// the UI thread (via the dispatcher), which owns the tray icon and the windows.
 /// </summary>
 public partial class App : Application
 {
-    private DispatcherQueue _ui = null!;
     private TrayService _tray = null!;
     private Poller _poller = null!;
 
@@ -29,17 +27,18 @@ public partial class App : Application
     private Config _cfg = new();
     private IReadOnlyList<VendorReport> _reports = Array.Empty<VendorReport>();
 
-    public App() => InitializeComponent();
-
-    protected override void OnLaunched(LaunchActivatedEventArgs args)
+    protected override void OnStartup(StartupEventArgs e)
     {
-        _ui = DispatcherQueue.GetForCurrentThread();
+        base.OnStartup(e);
+
+        // No window keeps the process alive — only the tray icon does.
+        ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
         _tray = new TrayService();
         _tray.Clicked += OnTrayClicked;
         _tray.Init();
 
-        _poller = new Poller(_ui);
+        _poller = new Poller(Dispatcher);
         _poller.Updated += OnUpdated;
         _poller.Start();
     }
@@ -92,6 +91,6 @@ public partial class App : Application
     {
         _tray.Dispose();
         _poller.Dispose();
-        Exit();
+        Shutdown();
     }
 }

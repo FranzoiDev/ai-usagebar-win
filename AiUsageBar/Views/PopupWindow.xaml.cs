@@ -1,24 +1,21 @@
 using System;
 using System.Collections.Generic;
+using System.Windows;
+using System.Windows.Media;
 using AiUsageBar.Models;
 using AiUsageBar.Services;
-using Microsoft.UI.Windowing;
-using Microsoft.UI.Xaml;
-using Windows.Foundation;
-using Windows.Graphics;
 
 namespace AiUsageBar.Views;
 
 /// <summary>Frameless, always-on-top popup anchored near the tray click. It
 /// light-dismisses when it loses focus, with a short grace period so the click
 /// that opened it does not immediately close it (mirrors the Win32 original).</summary>
-public sealed partial class PopupWindow : Window
+public partial class PopupWindow : Window
 {
     public event Action? RefreshRequested;
     public event Action? SettingsRequested;
     public event Action? QuitRequested;
 
-    private readonly AppWindow _appWindow;
     private bool _visible;
     private DateTimeOffset _shownAt;
     private DateTimeOffset _hiddenAt;
@@ -26,18 +23,7 @@ public sealed partial class PopupWindow : Window
     public PopupWindow()
     {
         InitializeComponent();
-
-        _appWindow = AppWindow;
-        var presenter = OverlappedPresenter.Create();
-        presenter.IsResizable = false;
-        presenter.IsMaximizable = false;
-        presenter.IsMinimizable = false;
-        presenter.IsAlwaysOnTop = true;
-        presenter.SetBorderAndTitleBar(false, false);
-        _appWindow.SetPresenter(presenter);
-        _appWindow.IsShownInSwitchers = false;
-
-        Activated += OnActivated;
+        Deactivated += OnDeactivated;
     }
 
     public void Toggle(Config cfg, IReadOnlyList<VendorReport> reports)
@@ -51,17 +37,18 @@ public sealed partial class PopupWindow : Window
         if ((DateTimeOffset.UtcNow - _hiddenAt).TotalMilliseconds < 300) return;
 
         Populate(cfg, reports);
-        _appWindow.Show();
+        Show();
+        UpdateLayout(); // realize SizeToContent so ActualWidth/Height are known
+        PositionNearCursor();
         Activate();
         _visible = true;
         _shownAt = DateTimeOffset.UtcNow;
-        DispatcherQueue.TryEnqueue(PositionNearCursor);
     }
 
     public void HidePopup()
     {
         if (!_visible) return;
-        _appWindow.Hide();
+        Hide();
         _visible = false;
         _hiddenAt = DateTimeOffset.UtcNow;
     }
@@ -79,9 +66,8 @@ public sealed partial class PopupWindow : Window
         EmptyLabel.Visibility = model.IsEmpty ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private void OnActivated(object sender, WindowActivatedEventArgs e)
+    private void OnDeactivated(object? sender, EventArgs e)
     {
-        if (e.WindowActivationState != WindowActivationState.Deactivated) return;
         // Grace period so the activating click does not instantly dismiss.
         if ((DateTimeOffset.UtcNow - _shownAt).TotalMilliseconds < 400) return;
         HidePopup();
@@ -89,29 +75,26 @@ public sealed partial class PopupWindow : Window
 
     private void PositionNearCursor()
     {
-        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        var dpi = NativeMethods.GetDpiForWindow(hwnd);
-        var scale = dpi == 0 ? 1.0 : dpi / 96.0;
-
-        const double widthEpx = 360.0;
-        RootGrid.Measure(new Size(widthEpx, double.PositiveInfinity));
-        var heightEpx = RootGrid.DesiredSize.Height;
-
-        var wPx = (int)(widthEpx * scale);
-        var hPx = (int)(heightEpx * scale);
-
+        // GetCursorPos is in physical pixels; WPF Left/Top are in DIPs.
         NativeMethods.GetCursorPos(out var pt);
-        var work = DisplayArea.GetFromPoint(new PointInt32(pt.X, pt.Y), DisplayAreaFallback.Primary).WorkArea;
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var cx = pt.X / dpi.DpiScaleX;
+        var cy = pt.Y / dpi.DpiScaleY;
 
-        const int margin = 8;
-        var x = pt.X - wPx / 2;
-        var y = pt.Y - hPx - margin; // prefer above the cursor (taskbar at bottom)
+        var w = ActualWidth;
+        var h = ActualHeight;
+        var work = SystemParameters.WorkArea; // DIPs (primary monitor)
 
-        if (x + wPx + margin > work.X + work.Width) x = work.X + work.Width - wPx - margin;
-        if (x < work.X + margin) x = work.X + margin;
-        if (y < work.Y + margin) y = pt.Y + margin; // flip below if no room above
+        const double margin = 8;
+        var x = cx - w / 2;
+        var y = cy - h - margin; // prefer above the cursor (taskbar at bottom)
 
-        _appWindow.MoveAndResize(new RectInt32(x, y, wPx, hPx));
+        if (x + w + margin > work.Right) x = work.Right - w - margin;
+        if (x < work.Left + margin) x = work.Left + margin;
+        if (y < work.Top + margin) y = cy + margin; // flip below if no room above
+
+        Left = x;
+        Top = y;
     }
 
     private void OnRefresh(object sender, RoutedEventArgs e) => RefreshRequested?.Invoke();
