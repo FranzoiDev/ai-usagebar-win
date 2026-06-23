@@ -117,6 +117,12 @@ Pushing a version tag (e.g. `git tag v0.3.0 && git push origin v0.3.0`) runs the
 `release` GitHub Actions workflow, which publishes the same build and attaches
 the `.exe` to a GitHub Release.
 
+On first run the app adds a **Start Menu shortcut** (per-user, no admin needed),
+so you can find and launch it from Windows Search by typing "AI Usage Bar".
+Only one instance runs at a time — launching it again while it's in the tray
+just reopens the popup instead of adding a second icon. **Quit** (in the popup)
+closes it.
+
 To start it with Windows, use the **Start with Windows** toggle in Settings (or
 put a shortcut to `ai-usagebar-win.exe` in `shell:startup`).
 
@@ -136,10 +142,11 @@ put a shortcut to `ai-usagebar-win.exe` in `shell:startup`).
 | `Services/TrayIconFactory.cs` | severity-tinted tray icon drawn in code |
 | `Services/TrayService.cs` | H.NotifyIcon wrapper |
 | `Services/StartupService.cs` | "Start with Windows" via the HKCU Run key |
+| `Services/ShortcutService.cs` | Start Menu shortcut so Search can find the app |
 | `Services/Poller.cs` | background polling loop with on-demand refresh |
 | `Views/PopupWindow.xaml` | frameless popup anchored near the tray |
 | `Views/SettingsWindow.xaml` | provider enable + API-key form (Fluent window) |
-| `App.xaml.cs` | tray-first app wiring (no main window) |
+| `App.xaml.cs` | tray-first app wiring; single-instance + shortcut on first run |
 
 ## Endpoints
 

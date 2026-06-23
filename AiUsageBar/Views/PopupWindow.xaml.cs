@@ -53,6 +53,19 @@ public partial class PopupWindow : Window
         _hiddenAt = DateTimeOffset.UtcNow;
     }
 
+    /// <summary>Show the popup (or re-focus it if already visible). Used when a
+    /// second app launch — e.g. from Windows Search — asks the running instance
+    /// to surface, where a plain toggle could wrongly dismiss an open popup.</summary>
+    public void EnsureShown(Config cfg, IReadOnlyList<VendorReport> reports)
+    {
+        if (_visible)
+        {
+            Activate();
+            return;
+        }
+        Toggle(cfg, reports);
+    }
+
     /// <summary>Rebuild in place when a new poll arrives while visible.</summary>
     public void Refresh(Config cfg, IReadOnlyList<VendorReport> reports)
     {

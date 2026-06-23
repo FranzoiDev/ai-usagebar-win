@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Windows;
 using AiUsageBar.Models;
 using AiUsageBar.Services;
@@ -17,6 +18,15 @@ namespace AiUsageBar;
 /// </summary>
 public partial class App : Application
 {
+    // Single-instance coordination (per user session). The mutex marks "an
+    // instance is running"; the event lets a second launch ask the first to
+    // surface its popup instead of spawning a duplicate tray icon.
+    private const string InstanceMutexName = @"Local\AiUsageBar.SingleInstance";
+    private const string ShowPopupEventName = @"Local\AiUsageBar.ShowPopup";
+
+    private Mutex? _instanceMutex;
+    private EventWaitHandle? _showEvent;
+
     private TrayService _tray = null!;
     private Poller _poller = null!;
 
@@ -31,8 +41,23 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        // Single instance: if one is already running, ask it to show its popup
+        // (e.g. the user re-launched from Windows Search) and exit immediately.
+        _instanceMutex = new Mutex(initiallyOwned: true, InstanceMutexName, out var isFirst);
+        if (!isFirst)
+        {
+            SignalExistingInstance();
+            Shutdown();
+            return;
+        }
+
         // No window keeps the process alive — only the tray icon does.
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+        // Make the app findable in Windows Search via a Start Menu shortcut.
+        ShortcutService.EnsureStartMenuShortcut();
+
+        StartShowPopupListener();
 
         _tray = new TrayService();
         _tray.Clicked += OnTrayClicked;
@@ -41,6 +66,55 @@ public partial class App : Application
         _poller = new Poller(Dispatcher);
         _poller.Updated += OnUpdated;
         _poller.Start();
+    }
+
+    /// <summary>Owns the named event the running instance waits on. A background
+    /// thread blocks on it and, when a second launch sets it, marshals a
+    /// "show popup" back onto the UI thread.</summary>
+    private void StartShowPopupListener()
+    {
+        _showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowPopupEventName);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                while (_showEvent.WaitOne())
+                    Dispatcher.BeginInvoke(new Action(ShowPopupFromExternal));
+            }
+            catch
+            {
+                // The handle is disposed on Quit — that unblocks us; just exit.
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "ShowPopupListener",
+        };
+        thread.Start();
+    }
+
+    /// <summary>Tell the already-running instance to surface its popup, by setting
+    /// the named event its listener thread waits on.</summary>
+    private static void SignalExistingInstance()
+    {
+        try
+        {
+            if (EventWaitHandle.TryOpenExisting(ShowPopupEventName, out var ev))
+            {
+                ev.Set();
+                ev.Dispose();
+            }
+        }
+        catch
+        {
+            // The other instance may be mid-startup/shutdown — nothing to do.
+        }
+    }
+
+    private void ShowPopupFromExternal()
+    {
+        _popup ??= CreatePopup();
+        _popup.EnsureShown(_cfg, _reports);
     }
 
     /// <summary>Runs on the UI thread after each poll.</summary>
@@ -91,6 +165,9 @@ public partial class App : Application
     {
         _tray.Dispose();
         _poller.Dispose();
+        _showEvent?.Dispose();
+        _instanceMutex?.ReleaseMutex();
+        _instanceMutex?.Dispose();
         Shutdown();
     }
 }
