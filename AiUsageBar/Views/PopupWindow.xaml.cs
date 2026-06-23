@@ -39,7 +39,7 @@ public partial class PopupWindow : Window
         Populate(cfg, reports);
         Show();
         UpdateLayout(); // realize SizeToContent so ActualWidth/Height are known
-        PositionNearCursor();
+        PositionAboveTaskbar();
         Activate();
         _visible = true;
         _shownAt = DateTimeOffset.UtcNow;
@@ -86,25 +86,31 @@ public partial class PopupWindow : Window
         HidePopup();
     }
 
-    private void PositionNearCursor()
+    /// <summary>Anchor the popup just above the taskbar, horizontally near the
+    /// tray click. The work area excludes the taskbar, so its bottom edge is the
+    /// taskbar's top edge (for a bottom taskbar) — pinning the popup there keeps
+    /// it above the taskbar regardless of where the cursor was.</summary>
+    private void PositionAboveTaskbar()
     {
         // GetCursorPos is in physical pixels; WPF Left/Top are in DIPs.
         NativeMethods.GetCursorPos(out var pt);
         var dpi = VisualTreeHelper.GetDpi(this);
         var cx = pt.X / dpi.DpiScaleX;
-        var cy = pt.Y / dpi.DpiScaleY;
 
         var w = ActualWidth;
         var h = ActualHeight;
-        var work = SystemParameters.WorkArea; // DIPs (primary monitor)
+        var work = SystemParameters.WorkArea; // DIPs (primary monitor), taskbar excluded
 
         const double margin = 8;
-        var x = cx - w / 2;
-        var y = cy - h - margin; // prefer above the cursor (taskbar at bottom)
 
+        // Horizontally follow the click (the tray icon), centered, clamped on-screen.
+        var x = cx - w / 2;
         if (x + w + margin > work.Right) x = work.Right - w - margin;
         if (x < work.Left + margin) x = work.Left + margin;
-        if (y < work.Top + margin) y = cy + margin; // flip below if no room above
+
+        // Vertically pin to the bottom of the work area — always above the taskbar.
+        var y = work.Bottom - h - margin;
+        if (y < work.Top + margin) y = work.Top + margin;
 
         Left = x;
         Top = y;
