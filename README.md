@@ -28,6 +28,16 @@ rotates the token the CLI shares, so a `claude` / `codex` session signed in
 elsewhere may need to re-login — the setting warns about this before you enable
 it. It stays off unless you turn it on.
 
+## Screenshots
+
+| Popup — click the tray icon | Tray tooltip — hover |
+| :---: | :---: |
+| <img src="screenshots/click.PNG" alt="Popup with per-provider usage cards" width="300"> | <img src="screenshots/hover.PNG" alt="Tray tooltip, one line per provider" width="220"> |
+
+| Settings |
+| :---: |
+| <img src="screenshots/settings.PNG" alt="Settings window" width="440"> |
+
 ## UI
 
 - **Hover** the tray icon for a one-line-per-provider tooltip.
