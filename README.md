@@ -17,9 +17,16 @@ popup and settings windows are native XAML.
 > data layer (vendor endpoints, credential parsing, severity model) is a
 > faithful port across all three — see the git history for the earlier versions.
 
-The app is read-only. It reads the access tokens the `claude` / `codex` CLIs
-already wrote to disk and never refreshes or rewrites them, so it cannot log you
-out. An expired token shows a "re-login" hint instead of being refreshed.
+By default the app is read-only: it reads the access tokens the `claude` /
+`codex` CLIs already wrote to disk and never refreshes or rewrites them, so it
+cannot log you out. An expired token shows a "re-login" hint instead.
+
+**Optional token refresh.** You can opt in (Settings → *Auto-refresh Claude /
+Codex tokens*, or `refresh_tokens = true` in the config) to let the app refresh
+a near-expiry OAuth token and write it back to the CLI credential file. This
+rotates the token the CLI shares, so a `claude` / `codex` session signed in
+elsewhere may need to re-login — the setting warns about this before you enable
+it. It stays off unless you turn it on.
 
 ## UI
 
@@ -27,9 +34,10 @@ out. An expired token shows a "re-login" hint instead of being refreshed.
 - **Click** the tray icon for a popup with a card and progress bars per
   provider. Only providers with an identified key/credential are shown.
 - **Settings** (button in the popup) opens a window to enable providers, manage
-  API keys, set the refresh interval, choose the primary provider, and toggle
-  **Start with Windows**. Changes are written to `config.toml` (the startup
-  toggle goes to the registry) and applied without a restart.
+  API keys, set the refresh interval, choose the primary provider, opt into
+  **Auto-refresh Claude / Codex tokens**, and toggle **Start with Windows**.
+  Changes are written to `config.toml` (except **Start with Windows**, which
+  goes to the registry) and applied without a restart.
 - **Quit** (button in the popup) exits the whole process.
 
 The icon color tracks worst-case usage: green <50%, yellow >=50%, orange >=75%,
@@ -60,6 +68,7 @@ setx OPENROUTER_API_KEY "your-key"
 Optional. Copy `config.example.toml` to `%APPDATA%\ai-usagebar\config.toml`.
 
 - `poll_seconds`: refresh interval, default 60, minimum 15.
+- `refresh_tokens`: opt-in OAuth token refresh, default false (see above).
 - `[ui] primary`: provider shown first in the tooltip/popup.
 - per-provider `enabled` and inline `api_key`.
 
@@ -120,7 +129,8 @@ put a shortcut to `ai-usagebar-win.exe` in `shell:startup`).
 | `Models/VendorReport.cs` | per-vendor poll result (Ok / NeedsLogin / Error) |
 | `Models/ViewModels.cs` | popup + settings view-models bound by XAML |
 | `Services/Config.cs` | TOML config load/save, API-key and path resolution |
-| `Services/Creds.cs` | read-only Claude/Codex credential readers (no refresh) |
+| `Services/Creds.cs` | Claude/Codex credential readers; opt-in token refresh + write-back |
+| `Services/OAuthClient.cs` | OAuth token-refresh calls (Anthropic + OpenAI) |
 | `Services/Vendors/` | one file per provider: endpoint, parse, snapshot |
 | `Services/Renderer.cs` | reports -> tooltip + popup/settings view-models |
 | `Services/TrayIconFactory.cs` | severity-tinted tray icon drawn in code |

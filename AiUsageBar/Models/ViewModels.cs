@@ -56,6 +56,8 @@ public sealed class SettingsModel
 {
     public long PollSeconds { get; set; }
     public string Primary { get; set; } = "anthropic";
+    /// <summary>Opt-in OAuth token refresh (Claude/Codex). Off by default.</summary>
+    public bool RefreshTokens { get; set; }
     public List<VendorSetting> Vendors { get; init; } = new();
 }
 

@@ -6,6 +6,12 @@
 # Seconds between refreshes (minimum 15). Default 60.
 poll_seconds = 60
 
+# Opt-in: let the app refresh the Claude/Codex OAuth tokens and write them back
+# to the CLI credential files when they near expiry. This ROTATES the tokens the
+# `claude` / `codex` CLIs share, so a CLI signed in elsewhere may need to
+# re-login. Off (read-only) by default. Also toggleable in the Settings window.
+# refresh_tokens = false
+
 [ui]
 # Which vendor leads the tray tooltip. Defaults to "anthropic".
 # primary = "anthropic"   # anthropic | openai | zai | openrouter | deepseek

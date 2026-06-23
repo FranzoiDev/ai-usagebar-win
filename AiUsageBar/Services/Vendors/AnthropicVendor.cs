@@ -6,7 +6,8 @@ using AiUsageBar.Models;
 namespace AiUsageBar.Services.Vendors;
 
 /// <summary>Anthropic Claude — <c>GET /api/oauth/usage</c> with the CLI's access
-/// token. Read-only: we never refresh the token (see <see cref="Creds"/>).</summary>
+/// token. Read-only by default; refreshes the token only when the user opts in
+/// (see <see cref="Creds"/>).</summary>
 internal static class AnthropicVendor
 {
     private const string UsageUrl = "https://api.anthropic.com/api/oauth/usage";
@@ -17,7 +18,8 @@ internal static class AnthropicVendor
         var path = cfg.AnthropicCredsPath();
         if (path is null) return VendorState.Error("could not resolve home directory");
 
-        var cred = Creds.ReadAnthropic(path, now.ToUnixTimeSeconds());
+        var cred = await Creds.ReadAnthropicAsync(
+            path, now.ToUnixTimeSeconds(), cfg.RefreshEnabled(), VendorClient.Client).ConfigureAwait(false);
         switch (cred.Kind)
         {
             case CredKind.Expired:

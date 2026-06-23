@@ -42,6 +42,18 @@
                     Foreground="{StaticResource TextBrush}"
                     Margin="0,4,0,4" />
 
+                <CheckBox
+                    x:Name="RefreshBox"
+                    Content="Auto-refresh Claude / Codex tokens"
+                    Foreground="{StaticResource TextBrush}"
+                    Margin="0,4,0,2" />
+                <TextBlock
+                    Foreground="{StaticResource DangerBrush}"
+                    FontSize="12"
+                    TextWrapping="Wrap"
+                    Margin="24,0,0,4"
+                    Text="Heads-up: this rotates the OAuth tokens the Claude and Codex CLIs store on disk. A CLI that is signed in elsewhere can lose its session and need a re-login the next time you use it. Leave this off unless you want the app to keep the tokens fresh for you." />
+
                 <ItemsControl x:Name="VendorsList" Margin="0,8,0,0">
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>

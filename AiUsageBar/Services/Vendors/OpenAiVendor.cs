@@ -6,7 +6,8 @@ using AiUsageBar.Models;
 namespace AiUsageBar.Services.Vendors;
 
 /// <summary>OpenAI Codex — <c>GET chatgpt.com/backend-api/wham/usage</c> with the
-/// Codex CLI's access token. Read-only: no token refresh.</summary>
+/// Codex CLI's access token. Read-only by default; refreshes only when the user
+/// opts in (see <see cref="Creds"/>).</summary>
 internal static class OpenAiVendor
 {
     private const string UsageUrl = "https://chatgpt.com/backend-api/wham/usage";
@@ -16,7 +17,8 @@ internal static class OpenAiVendor
         var path = cfg.OpenAiAuthPath();
         if (path is null) return VendorState.Error("could not resolve home directory");
 
-        var cred = Creds.ReadOpenAi(path, now.ToUnixTimeSeconds());
+        var cred = await Creds.ReadOpenAiAsync(
+            path, now.ToUnixTimeSeconds(), cfg.RefreshEnabled(), VendorClient.Client).ConfigureAwait(false);
         switch (cred.Kind)
         {
             case CredKind.Expired:

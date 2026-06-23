@@ -17,9 +17,15 @@ namespace AiUsageBar.Services;
 /// </summary>
 public sealed class Config
 {
-    // NOTE: poll_seconds must serialize before the [table] sections — TOML
-    // requires bare values to precede tables at the same level. Keep it first.
+    // NOTE: bare values must serialize before the [table] sections — TOML
+    // requires them to precede tables at the same level. Keep these two first.
     public long? PollSeconds { get; set; }
+
+    /// <summary>Opt-in: let the app refresh the Claude/Codex OAuth tokens (and
+    /// write them back to the CLI credential files) when they near expiry.
+    /// Off/absent = strictly read-only, the historical default. See
+    /// <see cref="RefreshEnabled"/>.</summary>
+    public bool? RefreshTokens { get; set; }
 
     public UiConfig Ui { get; set; } = new();
     public AnthropicConfig Anthropic { get; set; } = new();
@@ -83,6 +89,10 @@ public sealed class Config
     };
 
     public TimeSpan PollInterval() => TimeSpan.FromSeconds(Math.Max(PollSeconds ?? 60, 15));
+
+    /// <summary>True when the user opted into OAuth token refresh. A method (not a
+    /// property) so Tomlyn doesn't try to serialize it as a config key.</summary>
+    public bool RefreshEnabled() => RefreshTokens == true;
 
     /// <summary>Normalize a config built from the settings form: drop blank inline
     /// keys (so we never persist <c>api_key = ""</c>) and floor the poll interval.</summary>

@@ -50,6 +50,7 @@ public partial class SettingsWindow : FluentWindow
         PollBox.Value = _model.PollSeconds;
         PrimaryBox.SelectedIndex = Array.IndexOf(VendorIdExtensions.All, VendorIdExtensions.FromSlug(_model.Primary));
         StartupBox.IsChecked = StartupService.IsEnabled();
+        RefreshBox.IsChecked = _model.RefreshTokens;
         VendorsList.ItemsSource = _model.Vendors;
     }
 
@@ -58,6 +59,7 @@ public partial class SettingsWindow : FluentWindow
         var cfg = new Config
         {
             PollSeconds = PollBox.Value is double d ? (long)d : 60,
+            RefreshTokens = RefreshBox.IsChecked == true,
         };
 
         var idx = PrimaryBox.SelectedIndex < 0 ? 0 : PrimaryBox.SelectedIndex;

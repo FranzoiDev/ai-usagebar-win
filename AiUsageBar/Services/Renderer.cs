@@ -178,6 +178,7 @@ public static class Renderer
         {
             PollSeconds = Math.Max(cfg.PollSeconds ?? 60, 15),
             Primary = cfg.Primary().Slug(),
+            RefreshTokens = cfg.RefreshEnabled(),
         };
         foreach (var id in VendorIdExtensions.All)
             model.Vendors.Add(VendorSetting(id, cfg, reports));
